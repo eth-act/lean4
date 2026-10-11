@@ -54,6 +54,21 @@ set_option dev.skipProofs false in
 example (xs : Array Nat) (i : Nat) (h : i < xs.size) : xs[i] + 0 = xs[i] := by
   rw [getElem_add_zero]
 
+-- Proofs whose goals contain metavariables are not skipped: here `rfl` determines `n`
+def withAutoParam {n : Nat} (m : Nat) (_h : n = m := by rfl) : Nat := n
+
+theorem autoParamInStatement : withAutoParam 3 = 3 := rfl
+
+def autoParamInBody : Nat := withAutoParam 3
+
+def implicitOnly {n : Nat} : Nat := n
+def isThree (a : Nat) (_h : a = 3 := by rfl) : Nat := a
+
+-- the metavariable `rfl` assigns occurs only in the value of the `let`
+def autoParamViaLet : Nat :=
+  let t := implicitOnly
+  isThree t
+
 set_option linter.unusedVariables true
 set_option dev.skipLinters true
 
@@ -61,3 +76,26 @@ set_option dev.skipLinters true
 def unusedLet (x : Nat) : Nat :=
   let y := x
   0
+
+set_option dev.skipLinters false
+
+-- attributes are applied as usual to declarations with skipped proofs, also in headers
+@[simp] theorem simpSkipped (xs : Array Nat) (i : Nat) (_hi : i < xs.size) : xs[i] * 1 = xs[i] := by
+  simp
+
+set_option dev.skipProofs false in
+example (xs : Array Nat) (i : Nat) (h : i < xs.size) : xs[i] * 1 = xs[i] := by
+  simp only [simpSkipped]
+
+class Positive (n : Nat) : Prop where
+  pos : 0 < n
+
+@[instance] theorem positiveOne : Positive 1 := ⟨by decide⟩
+
+@[reducible, instance] def finOneInst : Inhabited (Fin 1) := ⟨⟨0, by decide⟩⟩
+
+set_option dev.skipProofs false in
+example : Positive 1 := inferInstance
+
+/-- info: 0 -/
+#guard_msgs in #eval (default : Fin 1).val

@@ -2269,26 +2269,25 @@ inductive SkipProofResult where
 def skippedProofMentionKey : Name := `_skippedProofMention
 
 /--
-Returns a stand-in for the proof `tacticCode` of `type` skipped by `internal.dev.skipPropByBlocks`:
-a local hypothesis of that type if there is one, as that is likely the actual proof (e.g., of a `get_elem_tactic` side goal) and keeps the hypothesis visible
+Returns a stand-in for the proof `tacticCode` of `type` (which must not contain metavariables)
+skipped by `internal.dev.skipPropByBlocks`: a local hypothesis of that type if there is one, as that
+is likely the actual proof (e.g., of a `get_elem_tactic` side goal) and keeps the hypothesis visible
 to unification (e.g., when the enclosing statement is a `simp` lemma). Otherwise, `skippedProof`
 applied to the section variables that `tacticCode` mentions (or seems to, judging by name only),
 each marked with `skippedProofMentionKey`. These mentions approximate which section variables the
 actual proof uses.
 -/
 def mkSkippedProof (type : Expr) (tacticCode : Syntax) : TermElabM Expr := do
-  -- assigning metavariables here could change the elaboration of the surrounding term
-  if !type.hasExprMVar then
-    -- like `findLocalDeclWithType?`, which is not imported here
-    let h? ← (← getLCtx).findDeclRevM? fun localDecl => do
-      if localDecl.isImplementationDetail then
-        return none
-      else if (← isDefEq type localDecl.type) then
-        return some localDecl.fvarId
-      else
-        return none
-    if let some h := h? then
-      return mkFVar h
+  -- like `findLocalDeclWithType?`, which is not imported here
+  let h? ← (← getLCtx).findDeclRevM? fun localDecl => do
+    if localDecl.isImplementationDetail then
+      return none
+    else if (← isDefEq type localDecl.type) then
+      return some localDecl.fvarId
+    else
+      return none
+  if let some h := h? then
+    return mkFVar h
   let sectionFVarIds := (← read).sectionFVars.foldl (init := ({} : FVarIdSet)) fun s _ e =>
     if e.isFVar then s.insert e.fvarId! else s
   let lctx ← getLCtx
