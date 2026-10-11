@@ -474,10 +474,18 @@ private def runTacticSkippingProof (mvarId : MVarId) (tacticCode : Syntax) (run 
     return .run
   let skipped ← mvarId.withContext do
     let type ← instantiateMVars (← mvarId.getType)
-    if (← isProp type) then
-      mvarId.assign (← mkSkippedProof type tacticCode)
-      return true
-    return false
+    unless !type.hasExprMVar && (← isProp type) do
+      return false
+    -- the tactic may be what assigns metavariables in the goal (e.g., `rfl` for an auto-param),
+    -- which may also occur only in the local context (e.g., in the value of a `let`)
+    let lctxHasMVar ← (← getLCtx).anyM fun decl => do
+      if (← instantiateMVars decl.type).hasExprMVar then return true
+      let some val := decl.value? | return false
+      return (← instantiateMVars val).hasExprMVar
+    if lctxHasMVar then
+      return false
+    mvarId.assign (← mkSkippedProof type tacticCode)
+    return true
   unless skipped do
     withOptions (·.insert `internal.dev.skipPropByBlocks (.ofBool false)) run
   return .done
