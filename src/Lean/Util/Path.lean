@@ -113,10 +113,30 @@ def initSearchPath (leanSysroot : FilePath) (sp : SearchPath := ∅) : IO Unit :
 private def initSearchPathInternal : IO Unit := do
   initSearchPath (← getBuildDir)
 
+/-- Package roots found by `findOLean`, valid for the given search path. -/
+private builtin_initialize oleanRootsRef : IO.Ref (SearchPath × List (String × FilePath)) ←
+  IO.mkRef ([], [])
+
+/--
+Like `sp.findWithExt ext mod`, but remembers package roots: an import resolves thousands of
+modules from a few packages. `findWithExt` itself is left unchanged as native code of downstream
+packages (e.g., Mathlib's `cache`) links against its compiled specializations.
+-/
+private def findWithCachedRoot? (sp : SearchPath) (ext : String) (mod : Name) : IO (Option FilePath) := do
+  let pkg := mod.getRoot.toString (escape := false)
+  let (rootsSp, roots) ← oleanRootsRef.get
+  let roots := if rootsSp == sp then roots else []
+  if let some root := roots.lookup pkg then
+    return some (modToFilePath root mod ext)
+  let some root ← sp.findM? (fun p => (p / pkg).isDir <||> ((p / pkg).addExtension ext).pathExists)
+    | return none
+  oleanRootsRef.set (sp, (pkg, root) :: roots)
+  return some (modToFilePath root mod ext)
+
 /-- Find the compiled `.olean` of a module in the `LEAN_PATH` search path. -/
 partial def findOLean (mod : Name) : IO FilePath := do
   let sp ← searchPathRef.get
-  if let some fname ← sp.findWithExt "olean" mod then
+  if let some fname ← findWithCachedRoot? sp "olean" mod then
     return fname
   else
     let pkg := FilePath.mk <| mod.getRoot.toString (escape := false)

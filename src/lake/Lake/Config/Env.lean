@@ -158,6 +158,44 @@ public def computeCache? (elan? : Option ElanInstall) (toolchain : String) : Bas
   else
     return none
 
+-- closed terms of code before existing declarations would be shared with them
+set_option compiler.extract_closed false in
+/--
+Parses `LEAN_DEV`, a comma-separated list of development shortcuts:
+* `checks`: skip kernel type checking and linters.
+* `proofs`: do not elaborate proofs (see the `dev.skipProofs` Lean option).
+-/
+public def devOptionsOf (spec : String) : EIO String LeanOptions := do
+  let mut opts : Array LeanOption := #[]
+  for s in spec.split ',' do
+    match s.trimAscii.copy with
+    | "" => pure ()
+    | "checks" =>
+      opts := opts.push ⟨`debug.skipKernelTC, .ofBool true⟩ |>.push ⟨`dev.skipLinters, .ofBool true⟩
+    | "proofs" =>
+      opts := opts.push ⟨`dev.skipProofs, .ofBool true⟩ |>.push ⟨`dev.skipLinters, .ofBool true⟩
+    | s => throw s!"'LEAN_DEV' contains unknown shortcut '{s}'; expected 'checks' or 'proofs'"
+  return LeanOptions.ofArray opts
+
+/--
+Development mode configuration, from the environment variables `LEAN_DEV` (see `devOptionsOf`) and
+`LEAN_DEV_CHECK`. Not part of `Env`, whose layout must match the upstream release's.
+-/
+public structure DevConfig where
+  /-- Lean options applied to every module Lake has to (re)build and mixed into its trace. -/
+  options : LeanOptions
+  /-- Module name prefixes exempt from `options` (`LEAN_DEV_CHECK`). -/
+  checkModules : Array Name
+
+-- closed terms of code before existing declarations would be shared with them
+set_option compiler.extract_closed false in
+/-- Reads the `DevConfig` from the environment. -/
+public def DevConfig.compute : EIO String DevConfig := do
+  let options ← devOptionsOf ((← IO.getEnv "LEAN_DEV").getD "")
+  let checkModules := (← IO.getEnv "LEAN_DEV_CHECK").getD "" |>.split ',' |>.toStringArray
+    |>.filterMap fun s => let s := s.trimAscii.copy; if s.isEmpty then none else some s.toName
+  return { options, checkModules }
+
 /--
 Compute a `Lake.Env` object from the given installs
 and the set environment variables.
@@ -166,6 +204,8 @@ public def compute
   (lake : LakeInstall) (lean : LeanInstall) (elan? : Option ElanInstall)
   (noCache : Option Bool := none)
 : EIO String Env := do
+  -- report an invalid `LEAN_DEV` early
+  discard DevConfig.compute
   let reservoirBaseUrl ← getUrlD "RESERVOIR_API_BASE_URL" "https://reservoir.lean-lang.org/api"
   let toolchain ← computeToolchain
   let userHome? ← getUserHome?

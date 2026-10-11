@@ -462,6 +462,26 @@ register_builtin_option backward.proofsInPublic : Bool := {
     its `warn` sub-option are enabled, additional warnings from private accesses."
 }
 
+-- closed terms of code before existing declarations would be shared with them
+set_option compiler.extract_closed false in
+/--
+Implements `internal.dev.skipPropByBlocks` for `runTactic`: if set, replaces the proof `tacticCode`
+of `mvarId` by `mkSkippedProof` or runs the tactic block (`run`) with the option unset.
+-/
+private def runTacticSkippingProof (mvarId : MVarId) (tacticCode : Syntax) (run : TermElabM Unit) :
+    TermElabM SkipProofResult := do
+  unless internal.dev.skipPropByBlocks.get (← getOptions) do
+    return .run
+  let skipped ← mvarId.withContext do
+    let type ← instantiateMVars (← mvarId.getType)
+    if (← isProp type) then
+      mvarId.assign (← mkSkippedProof type tacticCode)
+      return true
+    return false
+  unless skipped do
+    withOptions (·.insert `internal.dev.skipPropByBlocks (.ofBool false)) run
+  return .done
+
 mutual
 
   /--
@@ -471,7 +491,10 @@ mutual
 
   If `report := false`, then `runTactic` will not capture exceptions nor will report unsolved goals. Unsolved goals become exceptions.
   -/
-  partial def runTactic (mvarId : MVarId) (tacticCode : Syntax) (kind : TacticMVarKind) (report := true) : TermElabM Unit := withoutAutoBoundImplicit do
+  partial def runTactic (mvarId : MVarId) (tacticCode : Syntax) (kind : TacticMVarKind) (report := true) : TermElabM Unit := do
+    if let .done ← runTacticSkippingProof mvarId tacticCode (runTactic mvarId tacticCode kind report) then
+      return
+    withoutAutoBoundImplicit do
     let wasExporting := (← getEnv).isExporting
     -- exit exporting context if entering proof
     let isNoLongerExporting ← pure (wasExporting && !(← backward.proofsInPublic.getM)) <&&> do
