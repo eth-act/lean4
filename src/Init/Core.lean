@@ -2409,8 +2409,9 @@ So, you are mainly losing the capability of type checking your development using
 axiom ofReduceNat (a b : Nat) (h : reduceNat a = b) : a = b
 
 /--
-Stands in for proofs that were not elaborated because of the `dev.skipProofs` option. Like `sorryAx`,
-it can prove anything; `#print axioms` reveals declarations depending on unchecked proofs.
+Stands in for proofs that were not checked because of development options such as
+`dev.skipProofs` and `dev.trustSat`. Like `sorryAx`, it can prove anything; `#print axioms` reveals
+declarations depending on unchecked proofs.
 -/
 axiom skippedProof (p : Prop) : p
 
