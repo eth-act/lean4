@@ -275,13 +275,78 @@ def findMatchToSplit? (deepRecursiveSplit : Bool) (env : Environment) (e : Expr)
       else
         return Expr.FindStep.visit
 
+/--
+Replaces the free variables of `altIdx` in `e` by the corresponding `alts`, beta-reducing
+applications headed by them like `Expr.headBeta`.
+-/
+private partial def replaceAltFVars (altIdx : Std.HashMap FVarId Nat) (alts : Array Expr) (e : Expr) : Expr :=
+  e.replace fun t =>
+    if !t.hasFVar then some t
+    else if let .fvar fvarId := t.getAppFn then
+      if let some i := altIdx[fvarId]? then
+        some (mkAppN alts[i]! (t.getAppArgs.map (replaceAltFVars altIdx alts))).headBeta
+      else none
+    else none
+
+/--
+Splits the `match`-application `e` in the target of `mvarId` like `Split.splitMatchLazy`, but with
+the alternatives replaced by local variables during the split, which are substituted back in the
+resulting goals. This way, the work per alternative does not depend on the size of the other
+alternatives. Throws if this is not applicable.
+-/
+private def splitMatchAbstractingAlts (mvarId : MVarId) (e : Expr) : MetaM (List MVarId) := mvarId.withContext do
+  let some app ← matchMatcherApp? e | throwError "not a matcher application"
+  unless app.discrs.all (·.isFVar) && !app.alts.isEmpty && app.getNumDiscrEqs == 0 do
+    throwError "unsupported `match`-application"
+  -- Free variables of the alternatives that the split substitutes or reverts would have to be
+  -- replaced in the alternatives, too.
+  let altsFVars := (app.alts.foldl (collectFVars · ·) {}).fvarIds
+  if app.discrs.any (altsFVars.contains ·.fvarId!) then
+    throwError "alternatives depend on discriminants"
+  let target ← instantiateMVars (← mvarId.getType)
+  let matcherType ← instantiateForall
+    (← instantiateTypeLevelParams (← getConstVal app.matcherName) app.matcherLevels.toList)
+    (app.params.push app.motive ++ app.discrs)
+  let mut lctx ← getLCtx
+  let mut as := #[]
+  let mut type := matcherType
+  for _ in *...app.alts.size do
+    let .forallE n d b _ := type | throwError "unexpected matcher type"
+    let fvarId ← mkFreshFVarId
+    lctx := lctx.mkLocalDecl fvarId (← mkFreshUserName n) d
+    as := as.push (mkFVar fvarId)
+    type := b.instantiate1 (mkFVar fvarId)
+  let e' := { app with alts := as }.toExpr
+  let target' := target.replace fun t => if t == e then some e' else none
+  if target' == target then throwError "`match`-application not found in target"
+  let mvar' ← withLCtx' lctx <| mkFreshExprSyntheticOpaqueMVar target' (← mvarId.getTag)
+  let mvarIds ← Split.splitMatchLazy mvar'.mvarId! e'
+  let altIdx : Std.HashMap FVarId Nat := as.size.fold (init := {}) fun i _ m => m.insert as[i]!.fvarId! i
+  mvarIds.mapM fun mvarId => mvarId.withContext do
+    let lctx ← getLCtx
+    unless altsFVars.all lctx.contains do throwError "free variable of alternative was eliminated"
+    -- Only declarations introduced by the split can mention the alternatives.
+    let some lastAlt := lctx.find? as.back!.fvarId! | throwError "alternative was reverted"
+    lctx.forM (start := lastAlt.index + 1) fun decl => do
+      let decl ← instantiateLocalDeclMVars decl
+      let isAlt (e : Expr) : Bool := e.isFVar && altIdx.contains e.fvarId!
+      if (decl.type.find? isAlt).isSome || decl.value?.any (·.find? isAlt |>.isSome) then
+        throwError "alternative occurs in local context"
+    let target ← instantiateMVars (← mvarId.getType)
+    let lctx := as.foldl (fun lctx a => lctx.erase a.fvarId!) lctx
+    let mvar ← withLCtx' lctx <|
+      mkFreshExprSyntheticOpaqueMVar (replaceAltFVars altIdx app.alts target) (← mvarId.getTag)
+    return mvar.mvarId!
+
 partial def splitMatch? (mvarId : MVarId) (declNames : Array Name) : MetaM (Option (List MVarId)) := commitWhenSome? do
   let target ← mvarId.getType'
   let rec go (badCases : ExprSet) : MetaM (Option (List MVarId)) := do
     if let some e := findMatchToSplit? (backward.eqns.deepRecursiveSplit.get (← getOptions)) (← getEnv)
                                        target declNames badCases then
       try
-        Meta.Split.splitMatch mvarId e
+        if let some mvarIds ← observing? (splitMatchAbstractingAlts mvarId e) then
+          return some mvarIds
+        return some (← Meta.Split.splitMatchLazy mvarId e)
       catch ex =>
         trace[Elab.definition.eqns] "cannot split {e}\n{ex.toMessageData}"
         go (badCases.insert e)

@@ -12,6 +12,7 @@ public import Lean.Meta.Tactic.Generalize
 public import Lean.Meta.Tactic.Simp.Types
 import Lean.Meta.Tactic.Simp.Main
 import Lean.Meta.Tactic.SplitIf
+import Lean.Meta.Match.NamedPatterns
 
 public section
 
@@ -387,3 +388,120 @@ builtin_initialize
   registerTraceClass `split.failure
 
 end Lean.Meta
+
+/-!
+Lazy splitting for equation generation. These declarations come after all others so that they do
+not change the compiled code of existing declarations, on which `.olean` files built by the
+upstream release may depend.
+-/
+
+namespace Lean.Meta.Split
+
+/-- Like `simpMatchCore`, but `getMatchEqDeclName` is only run if the matcher application cannot be reduced directly. -/
+private def simpMatchCoreLazy (matchDeclName : Name) (getMatchEqDeclName : MetaM Name) (e : Expr) : MetaM Simp.Result := do
+  let discharge? ← SplitIf.mkDischarge?
+  (·.1) <$> Simp.main e (← getSimpMatchContext) (methods := { pre, discharge? })
+where
+  pre (e : Expr) : SimpM Simp.Step := do
+    if e.isAppOf matchDeclName then
+      -- First try to reduce matcher
+      match (← reduceRecMatcher? e) with
+      | some e' => return .done { expr := e' }
+      | none    =>
+      -- Try lemma
+      let matchEqDeclName ← getMatchEqDeclName
+      let simpTheorem := {
+        origin := .decl matchEqDeclName
+        proof := mkConst matchEqDeclName
+        rfl := (← isRflTheorem matchEqDeclName)
+        backwardRfl := (← isBackwardRflTheorem matchEqDeclName)
+      }
+      match (← withReducible <| Simp.tryTheorem? e simpTheorem) with
+      | none => return .continue
+      | some r => return .done r
+    else
+      return .continue
+
+private def simpMatchTargetCoreLazy (mvarId : MVarId) (matchDeclName : Name) (getMatchEqDeclName : MetaM Name) : MetaM MVarId := do
+  mvarId.withContext do
+    let target ← instantiateMVars (← mvarId.getType)
+    let r ← simpMatchCoreLazy matchDeclName getMatchEqDeclName target
+    match r.proof? with
+    | some proof => mvarId.replaceTargetEq r.expr proof
+    | none => mvarId.replaceTargetDefEq r.expr
+
+/-- Like `applyMatchSplitter`, but with the given splitter and its alternatives. -/
+private def applyMatchSplitterCore (mvarId : MVarId) (matcherDeclName : Name) (info : MatcherInfo)
+    (splitterName : Name) (splitterAltInfos : Array Match.AltParamInfo) (us : Array Level) (params : Array Expr)
+    (discrs : Array Expr) : MetaM (List MVarId) := do
+  -- splitterPre does not have the correct universe elimination level, but this is fine, we only use it to compute the `motiveType`,
+  -- and we only care about the `motiveType` arguments, and not the resulting `Sort u`.
+  let splitterPre := mkAppN (mkConst splitterName us.toList) params
+  let motiveType := (← whnfForall (← inferType splitterPre)).bindingDomain!
+  trace[split.debug] "applyMatchSplitter\n{mvarId}"
+  let (discrs, mvarId) ← generalizeMatchPropDiscrs mvarId discrs
+  trace[split.debug] "after generalizeMatchPropDiscrs\n{mvarId}"
+  let (discrFVarIds, discrEqs, mvarId) ← generalizeMatchDiscrs mvarId matcherDeclName motiveType discrs
+  trace[split.debug] "after generalizeMatchDiscrs\n{mvarId}"
+  let mvarId ← generalizeTargetsEq mvarId motiveType (discrFVarIds.map mkFVar)
+  mvarId.withContext do trace[split.debug] "discrEqs after generalizeTargetsEq: {discrEqs.map mkFVar}"
+  trace[split.debug] "after generalize\n{mvarId}"
+  let numEqs := discrs.size
+  let (discrFVarIdsNew, mvarId) ← mvarId.introN discrs.size
+  trace[split.debug] "after introN\n{mvarId}"
+  let discrsNew := discrFVarIdsNew.map mkFVar
+  let mvarType ← mvarId.getType
+  let elimUniv ← mvarId.withContext <| getLevel mvarType
+  let us ← if let some uElimPos := info.uElimPos? then
+    pure <| us.set! uElimPos elimUniv
+  else
+    unless elimUniv.isZero do
+      throwError "`split` tactic failed to split a match-expression: The splitter auxiliary theorem \
+        `{.ofConstName splitterName}` can only eliminate into `Prop`"
+    pure us
+  let splitter := mkAppN (mkConst splitterName us.toList) params
+  mvarId.withContext do
+    let motive ← mkLambdaFVars discrsNew mvarType
+    let splitter := mkAppN (mkApp splitter motive) discrsNew
+    check splitter
+    trace[split.debug] "after check splitter"
+    let mvarIds ← mvarId.applyN splitter splitterAltInfos.size
+    let (_, mvarIds) ← mvarIds.foldlM (init := (0, [])) fun (i, mvarIds) mvarId => do
+      let altInfo := splitterAltInfos[i]!
+      let mvarId ←
+        if altInfo.hasUnitThunk then
+          trace[split.debug] "introducing unit param for alt {(i : Nat)}"
+          let (unitFvarId, mvarId) ← mvarId.intro1
+          mvarId.tryClear unitFvarId
+        else
+          let (_, mvarId) ← mvarId.introN (altInfo.numFields + altInfo.numOverlaps)
+          pure mvarId
+      trace[split.debug] "before unifyEqs\n{mvarId}"
+      match (← Cases.unifyEqs? (info.getNumDiscrEqs + numEqs) mvarId {}) with
+      | none   => return (i+1, mvarIds) -- case was solved
+      | some (mvarId, fvarSubst) =>
+        trace[split.debug] "after unifyEqs\n{mvarId}"
+        let mvarId ← substDiscrEqs mvarId fvarSubst discrEqs
+        return (i+1, mvarId::mvarIds)
+    return mvarIds.reverse
+
+/--
+Like `splitMatch`, but when the matcher can serve as its own splitter (no overlapping patterns and
+no named patterns, cf. `Match.getEquationsFor`), splits with the matcher itself and realizes the
+match equations only if a resulting goal needs them. The resulting goals are the same as for
+`splitMatch`, but the proof refers to the matcher instead of its splitter.
+-/
+def splitMatchLazy (mvarId : MVarId) (e : Expr) : MetaM (List MVarId) := mvarId.withContext do
+  let some app ← matchMatcherApp? e | throwInternalMisuseError m!"Internal error in `split` tactic: Match application expected{indentExpr e}"
+  let some info ← getMatcherInfo? app.matcherName | throwInternalMisuseError m!"Internal error in `split` tactic: `{app.matcherName}` is not an auxiliary declaration used to encode `match`-expressions"
+  unless info.overlaps.isEmpty && ((← getConstInfo app.matcherName).type.find? Match.isNamedPattern).isNone do
+    return (← splitMatch mvarId e)
+  let mvarIds ← applyMatchSplitterCore mvarId app.matcherName info app.matcherName info.altInfos
+    app.matcherLevels app.params app.discrs
+  let (_, mvarIds) ← mvarIds.foldlM (init := (0, [])) fun (i, mvarIds) mvarId => do
+    let mvarId ← simpMatchTargetCoreLazy mvarId app.matcherName
+      (return (← Match.getEquationsFor app.matcherName).eqnNames[i]!)
+    return (i+1, mvarId::mvarIds)
+  return mvarIds.reverse
+
+end Lean.Meta.Split
