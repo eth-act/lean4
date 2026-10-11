@@ -331,6 +331,8 @@ def logSnapshotTask (task : Language.SnapshotTask Language.SnapshotTree) : Comma
 
 open Language in
 def runLintersAsync (stx : Syntax) : CommandElabM Unit := do
+  if dev.skipLinters.get (← getOptions) then
+    return
   if !Elab.async.get (← getOptions) then
     withoutModifyingEnv do
       runLinters stx

@@ -609,14 +609,11 @@ endif()
 
 # Git HASH
 if(USE_GITHASH)
-  include(GetGitRevisionDescription)
-  get_git_head_revision(GIT_REFSPEC GIT_SHA1 ALLOW_LOOKING_ABOVE_CMAKE_SOURCE_DIR)
-  if(GIT_SHA1 MATCHES "GITDIR-NOTFOUND")
-    message(STATUS "Failed to read git_sha1")
-    set(GIT_SHA1 "")
-  else()
-    message(STATUS "git commit sha1: ${GIT_SHA1}")
-  endif()
+  # This development branch identifies as the upstream release it is based on, making its build
+  # outputs interchangeable with those of the release (Lake traces, `.olean` headers checked by
+  # release builds). Must be updated when rebasing onto another release.
+  set(GIT_SHA1 "68218e876d2a38b1985b8590fff244a83c321783")
+  message(STATUS "git commit sha1 (upstream release): ${GIT_SHA1}")
 else()
   if(USE_LAKE AND STAGE EQUAL 0)
     # we need to embed *some* hash for Lake to invalidate stage 1 on stage 0 changes

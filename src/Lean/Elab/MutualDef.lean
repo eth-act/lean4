@@ -1192,6 +1192,224 @@ register_builtin_option warn.redundantExpose : Bool := {
   descr    := "warn about redundant `@[expose]`/`@[no_expose]` attributes"
 }
 
+/-!
+Development mode (`dev.skipProofs`). This code comes after the declarations it extends so that their
+compiled code, on which `.olean` files built by the upstream release may depend, does not change.
+-/
+
+-- closed terms of code before existing declarations would be shared with them
+set_option compiler.extract_closed false in
+/-- Replaces each section variable mention `e` marked by `Term.mkSkippedProof` with `f e`. -/
+private def replaceSkippedProofMentions (val : Expr) (f : Expr → Expr) : Expr :=
+  val.replace fun e => do
+    let .mdata d b := e | none
+    guard <| d.contains Term.skippedProofMentionKey
+    return f b
+
+-- closed terms of code before existing declarations would be shared with them
+set_option compiler.extract_closed false in
+/--
+`instantiateMVars`, which the code here does not specialize as declarations below would use its
+specializations instead of creating theirs.
+-/
+private def instantiateMVarsCore' (e : Expr) : MetaM Expr := do
+  let (e, mctx) := instantiateMVarsCore (← getMCtx) e
+  setMCtx mctx
+  return e
+
+-- closed terms of code before existing declarations would be shared with them
+set_option compiler.extract_closed false in
+/--
+Whether, under `dev.skipProofs`, to replace the body `valStx` of a theorem or example of type `type`
+with `skippedProof`. `rfl` proofs are kept as they are cheap and `dsimp` uses them via `@[defeq]`.
+-/
+private def useSkippedProof (k : DefKind) (valStx : Syntax) (type : Expr) : MetaM Bool := do
+  let opts ← getOptions
+  -- with `deprecated.oldSectionVars`, theorem proofs determine the section variables
+  unless dev.skipProofs.get opts && !deprecated.oldSectionVars.get opts && (k.isTheorem || k.isExample) do
+    return false
+  match valStx with
+  | `(rfl) | `(by rfl) | `(by exact rfl) | `(Eq.refl _) => return false
+  | _ => return (← getEnv).contains ``skippedProof && (← isProp type)
+
+-- closed terms of code before existing declarations would be shared with them
+set_option compiler.extract_closed false in
+/--
+Under `dev.skipProofs`, checks whether a definition body elaborated with its proofs skipped (see
+`Term.mkSkippedProof`) may abstract over other section variables than the fully elaborated body, in a
+way that changes how the definition is applied. This is the case if a skipped proof mentions a
+variable the rest of the definition does not use, or if there is such a hypothesis, which proofs may
+use implicitly (e.g., via `simp_all`). Variations in instance-implicit variables are accepted as
+callers do not pass them explicitly. Returns the first variable that may make a difference.
+-/
+private def proofSkipChangingSectionVar? (vars : Array Expr) (sc : Command.Scope) (type val : Expr) :
+    MetaM (Option Expr) := do
+  -- no proof was replaced by `skippedProof`
+  if vars.isEmpty || (val.find? (·.isConstOf ``skippedProof)).isNone then return none
+  let type ← instantiateMVarsCore' type
+  let keptBy (val : Expr) : MetaM (Array Expr) := do
+    let (_, used) ← (do type.collectFVars; val.collectFVars).run {}
+    return (← Meta.removeUnused vars used).2.2
+  let kept ← keptBy val
+  let keptWithoutMentions ← keptBy (replaceSkippedProofMentions val fun _ => .const ``True [])
+  -- not `Array.contains`, whose specialization declarations below would use instead of creating theirs
+  let mem (xs : Array Expr) (x : Expr) := xs.any (·.fvarId! == x.fvarId!)
+  for var in vars do
+    if mem keptWithoutMentions var then continue
+    let decl ← var.fvarId!.getDecl
+    if decl.binderInfo.isInstImplicit || sc.includedVars.contains decl.userName then continue
+    if mem kept var || (← Meta.isProp decl.type) then
+      return var
+  return none
+
+-- closed terms of code before existing declarations would be shared with them
+set_option compiler.extract_closed false in
+/--
+Elaborates a definition body with proposition-typed `by` blocks outside of tactic blocks skipped
+(`skipping`), falling back to full elaboration (`full`) if that fails or could change the
+definition's section variables.
+-/
+private def elabBodySkippingProofs (vars : Array Expr) (sc : Command.Scope) (type : Expr)
+    (skipping full : TermElabM Expr) : TermElabM Expr := do
+  if (← MonadLog.hasErrors) then
+    return (← full)
+  let s ← saveState
+  let val? ← tryCatchRuntimeEx
+    (some <$> withOptions (·.insert `internal.dev.skipPropByBlocks (.ofBool true)) skipping)
+    (fun _ => pure none)
+  if let some val := val? then
+    let val ← instantiateMVarsCore' val
+    if (← MonadLog.hasErrors) then
+      trace[Elab.definition.skipProofs] "{← getDeclName?}: elaborating proofs, errors without them"
+    else if let some var ← proofSkipChangingSectionVar? vars sc type val then
+      trace[Elab.definition.skipProofs] "{← getDeclName?}: elaborating proofs, they may use {var}"
+    else
+      return replaceSkippedProofMentions val id
+  else
+    trace[Elab.definition.skipProofs] "{← getDeclName?}: elaborating proofs, exception without them"
+  s.restore (restoreInfo := true)
+  -- `withCurrHeartbeats`
+  let heartbeats ← IO.getNumHeartbeats
+  withTheReader Core.Context ({ · with initHeartbeats := heartbeats }) full
+
+-- closed terms of code before existing declarations would be shared with them
+set_option compiler.extract_closed false in
+/--
+`elabFunValues`, but under `dev.skipProofs` with proofs skipped: theorems and examples by
+`useSkippedProof`, and proposition-typed `by` blocks in other definitions by `elabBodySkippingProofs`.
+-/
+private def elabFunValuesSkippingProofs (headers : Array DefViewElabHeader) (vars : Array Expr) (sc : Command.Scope) : TermElabM (Array Expr) := do
+  unless dev.skipProofs.get (← getOptions) do
+    return (← elabFunValues headers vars sc)
+  headers.mapM fun header => do
+    let mut reusableResult? := none
+    if let some snap := header.bodySnap? then
+      if let some old := snap.old? then
+        -- guaranteed reusable as by the `bodySnap?` invariant, so let's wait on the previous
+        -- elaboration
+        if let some old := old.val.get then
+          snap.new.resolve <| some old
+          reusableResult? := some (old.value, old.state)
+        else
+          -- make sure to cancel any async tasks that may still be running (e.g. kernel and codegen)
+          old.val.cancelRec
+
+    let (val, state) ← withRestoreOrSaveFull reusableResult? header.tacSnap? do
+      withReuseContext header.value do
+      withTraceNode `Elab.definition.value (fun _ => pure header.declName) do
+      withDeprecationContextFromAttrs header.modifiers.attrs <| withDeclName header.declName <| withLevelNames header.levelNames do
+      let valStx ← declValToTerm header.value header.type
+      let sectionVars := vars
+      (if header.kind.isTheorem && !deprecated.oldSectionVars.get (← getOptions) then withHeaderSecVars vars sc #[header] else fun x => x #[]) fun vars => do
+      withLCtx' ((← getLCtx).modifyLocalDecls fun decl => decl.setType decl.type.cleanupAnnotations) do
+      forallBoundedTelescope header.type header.numParams (cleanupAnnotations := true) fun xs type => do
+        -- Add new info nodes for new fvars. The server will detect all fvars of a binder by the binder's source location.
+        for h : i in *...header.binderIds.size do
+          -- skip auto-bound prefix in `xs`
+          addLocalVarInfo header.binderIds[i] xs[header.numParams - header.binderIds.size + i]!
+        let elabBody (useTacSnap : Bool) : TermElabM Expr :=
+          withReader ({ · with tacSnap? := if useTacSnap then header.tacSnap? else none }) do
+          -- Store instantiated body in info tree for the benefit of the unused variables linter
+          -- and other metaprograms that may want to inspect it without paying for the instantiation
+          -- again
+          withInfoContext' valStx
+            (mkInfo := (pure <| .inl <| mkBodyInfo valStx ·))
+            (mkInfoOnError := (pure <| mkBodyInfo valStx none))
+            do
+              -- synthesize mvars here to force the top-level tactic block (if any) to run
+              let val ← elabTermEnsuringType valStx type <* synthesizeSyntheticMVarsNoPostponing
+              -- NOTE: without this `instantiatedMVars`, `mkLambdaFVars` may leave around a redex that
+              -- leads to more section variables being included than necessary
+              instantiateMVarsProfiling val
+        let val ← if (← useProofAsSorry header.kind) then
+          mkSorry type false
+        else if (← useSkippedProof header.kind valStx type) then
+          pure <| mkApp (.const ``skippedProof []) type
+        else if dev.skipProofs.get (← getOptions) && !header.kind.isTheorem then
+          elabBodySkippingProofs sectionVars sc type (elabBody false) (elabBody true)
+        else
+          elabBody true
+        let val ← mkLambdaFVars xs val
+        if header.type?.isNone && (← getEnv).header.isModule && !(← getEnv).isExporting &&
+            !isPrivateName header.declName && header.kind != .example then
+          -- If the type of a non-exposed definition was elided, we need to check after the fact
+          -- whether it is in fact well-formed.
+          withRef header.declId do
+          withExporting do
+            let type ← instantiateMVars type
+            Meta.check type
+        if Linter.getLinterValue linter.unusedSectionVars (← Linter.getLinterOptions) && !header.type.hasSorry && !val.hasSorry then
+          let unusedVars ← vars.filterMapM fun var => do
+            let varDecl ← var.fvarId!.getDecl
+            return if sc.includedVars.contains varDecl.userName ||
+                header.type.containsFVar var.fvarId! || val.containsFVar var.fvarId! ||
+                (← vars.anyM (fun v => return (← v.fvarId!.getType).containsFVar var.fvarId!)) then
+              none
+            else
+              if varDecl.userName.hasMacroScopes && varDecl.binderInfo.isInstImplicit then
+                some m!"[{varDecl.type}]"
+              else
+                some m!"{var}"
+          if unusedVars.size > 0 then
+            Linter.logLint linter.unusedSectionVars header.ref
+              m!"automatically included section variable(s) unused in theorem `{header.declName}`:\
+              \n  {MessageData.joinSep unusedVars.toList "\n  "}\
+              \nconsider restructuring your `variable` declarations so that the variables are not \
+                in scope or explicitly omit them:\
+              \n  omit {MessageData.joinSep unusedVars.toList " "} in theorem ..."
+        return val
+    if let some snap := header.bodySnap? then
+      snap.new.resolve <| some {
+        diagnostics :=
+          (← Language.Snapshot.Diagnostics.ofMessageLog (← Core.getAndEmptyMessageLog))
+        moreSnaps := (← Core.getAndEmptySnapshotTasks)
+        state
+        value := val
+      }
+    return val
+
+-- closed terms of code before existing declarations would be shared with them
+set_option compiler.extract_closed false in
+/--
+`elabHeaders`, but under `dev.skipProofs` with proposition-typed `by` blocks skipped (e.g.,
+`get_elem_tactic` side goals; see `Term.mkSkippedProof`), unless there are section hypotheses that
+such proofs could use implicitly, thereby changing the declaration's section variables.
+-/
+private def elabHeadersSkippingProofs (views : Array DefView) (expandedDeclIds : Array ExpandDeclIdResult)
+    (bodyPromises : Array (IO.Promise (Option BodyProcessedSnapshot)))
+    (tacPromises : Array (IO.Promise Tactic.TacticParsedSnapshot)) :
+    TermElabM (Array DefViewElabHeader) := do
+  let elabAll := elabHeaders views expandedDeclIds bodyPromises tacPromises
+  unless dev.skipProofs.get (← getOptions) do
+    return (← elabAll)
+  let lctx ← getLCtx
+  for (_, var) in (← read).sectionFVars do
+    if let some decl := lctx.find? var.fvarId! then
+      if !decl.binderInfo.isInstImplicit && (← Meta.isProp decl.type) then
+        return (← elabAll)
+  let headers ← withOptions (·.insert `internal.dev.skipPropByBlocks (.ofBool true)) elabAll
+  return headers.map fun header => { header with type := replaceSkippedProofMentions header.type id }
+
 def elabMutualDef (vars : Array Expr) (sc : Command.Scope) (views : Array DefView) : TermElabM Unit :=
   if isExample views then
     withoutModifyingEnv do
@@ -1222,7 +1440,7 @@ where
       views.any (fun view => view.kind != .example || view.modifiers.isPublic) &&
       expandedDeclIds.any (!isPrivateName ·.declName)) do
     withSaveInfoContext do  -- save adjusted env in info tree
-    let headers ← elabHeaders views expandedDeclIds bodyPromises tacPromises
+    let headers ← elabHeadersSkippingProofs views expandedDeclIds bodyPromises tacPromises
     let headers ← levelMVarToParamHeaders views headers
 
     -- Now that we have elaborated types, default data instances to `[implicit_reducible]`. This
@@ -1390,7 +1608,7 @@ where
     let headers := headers.map fun header =>
       { header with modifiers.attrs := header.modifiers.attrs.filter (!·.name ∈ [`expose, `no_expose]) }
     let values ← try
-      let values ← elabFunValues headers vars sc
+      let values ← elabFunValuesSkippingProofs headers vars sc
       Term.synthesizeSyntheticMVarsNoPostponing
       values.mapM (instantiateMVarsProfiling ·)
     catch ex =>
@@ -1605,3 +1823,6 @@ therefore also take as a parameter. This also caused a knock-on effect in certai
 wherein `h` would compile as an `axiom` rather than as `opaque`, rendering `f` erroneously
 noncomputable.
 -/
+
+builtin_initialize
+  Lean.registerTraceClass `Elab.definition.skipProofs

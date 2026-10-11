@@ -2449,6 +2449,12 @@ So, you are mainly losing the capability of type checking your development using
 @[deprecated "in-kernel native reduction is deprecated; assert native evaluations with axioms instead" (since := "2026-02-01")]
 axiom ofReduceNat (a b : Nat) (h : reduceNat a = b) : a = b
 
+/--
+Stands in for proofs that were not elaborated because of the `dev.skipProofs` option. Like `sorryAx`,
+it can prove anything; `#print axioms` reveals declarations depending on unchecked proofs.
+-/
+axiom skippedProof (p : Prop) : p
+
 
 /--
 The term `opaqueId x` will not be reduced by the kernel.

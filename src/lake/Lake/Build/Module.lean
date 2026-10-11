@@ -900,6 +900,31 @@ def traceOptions (opts : LeanOptions) (caption := "opts") : BuildTrace :=
     let opt := s!"-D{n}={v.asCliFlagValue}"
     t.mix <| .ofHash (pureHash opt) opt
 
+-- closed terms of code before existing declarations would be shared with them
+set_option compiler.extract_closed false in
+/-- Reads the development mode configuration (see `Env.DevConfig`). -/
+private def getDevConfig : JobM Env.DevConfig := do
+  match ← Env.DevConfig.compute.toBaseIO with
+  | .ok cfg => return cfg
+  | .error e => error e
+
+-- closed terms of code before existing declarations would be shared with them
+set_option compiler.extract_closed false in
+/--
+Applies the development options of `LEAN_DEV` to a module Lake has to (re)build, unless it has
+outputs built without them.
+-/
+private def Module.withDevOptions (mod : Module) (setup : ModuleSetup) : JobM ModuleSetup := do
+  let dev ← getDevConfig
+  if dev.options.values.isEmpty || dev.checkModules.any (·.isPrefixOf mod.name) then
+    return setup
+  -- outputs built without dev options (e.g., downloaded caches) are at least as good
+  if let .ok data ← readTraceFile mod.traceFile then
+    if data.depHash == (← getTrace).hash then
+      return setup
+  addTrace <| traceOptions dev.options "dev options"
+  return {setup with options := setup.options ++ dev.options}
+
 /--
 Recursively build a Lean module.
 Fetch its dependencies and then elaborate the Lean source file, producing
@@ -925,6 +950,7 @@ def Module.recBuildLean (mod : Module) : FetchM (Job ModuleOutputArtifacts) := d
     addPureTrace mod.pkg.id? "Package.id?"
     addPureTrace mod.leanArgs "Module.leanArgs"
     setTraceCaption s!"{mod.name.toString}:leanArts"
+    let setup ← mod.withDevOptions setup
     let arts ← fetchCore setup srcFile srcTrace
     let arts ← trackOutputsIfEnabled arts
     let arts ← adjustMTime arts
