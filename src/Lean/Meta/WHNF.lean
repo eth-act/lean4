@@ -533,6 +533,124 @@ private def whnfMatcher (e : Expr) : MetaM Expr := do
     -- In the future, we want to work on better reduction strategies that do not require caching.
     whnf e
 
+-- closed terms of code before existing declarations would be shared with them
+set_option compiler.extract_closed false in
+/--
+Like `forallBoundedTelescope type n k`, but does not register the new free variables as local
+instances. `reduceMatcher?` only uses them as opaque heads, and checking whether each
+alternative type is a class is expensive for matchers with many alternatives.
+-/
+private def withMatcherAltFVars (type : Expr) (n : Nat) (k : Array Expr → MetaM α) : MetaM α := do
+  let mut lctx ← getLCtx
+  let mut hs := #[]
+  let mut type := type
+  for _ in *...n do
+    unless type.isForall do
+      type ← withLCtx' lctx <| whnf type
+    let .forallE name d b bi := type | break
+    let fvarId ← mkFreshFVarId
+    lctx := lctx.mkLocalDecl fvarId name d bi
+    let h := mkFVar fvarId
+    hs := hs.push h
+    type := b.instantiate1 h
+  withLCtx' lctx (k hs)
+
+-- closed terms of code before existing declarations would be shared with them
+set_option compiler.extract_closed false in
+/--
+Fast path of `reduceMatcher?` for a matcher whose body (in its value `f`) is a single `casesOn`
+application on a parameter or discriminant that is a constructor application in `args`. It
+selects the minor premise for that constructor directly instead of reducing the matcher with all
+alternatives, and returns the same result as the general path. Returns `none` if not applicable.
+-/
+private def reduceCasesOnMatcher? (f : Expr) (args : Array Expr) (prefixSz numAlts : Nat) :
+    MetaM (Option Expr) := do
+  let cfg ← getConfig
+  unless cfg.beta && cfg.iota do return none
+  let numBinders := prefixSz + numAlts
+  let mut body := f
+  for _ in *...numBinders do
+    let .lam _ _ b _ := body | return none
+    body := b
+  let .const casesOnName casesOnLvls := body.getAppFn | return none
+  let env ← getEnv
+  unless isCasesOnRecursor env casesOnName do return none
+  let .str indName _ := casesOnName | return none
+  -- `whnf` treats `Nat` constructor applications specially
+  if indName == ``Nat then return none
+  let some (.inductInfo indVal) := env.find? indName | return none
+  let some (.recInfo recVal) := env.find? (mkRecName indName) | return none
+  if recVal.k then return none
+  let some casesOnInfo := env.find? casesOnName | return none
+  unless casesOnInfo.levelParams.length == casesOnLvls.length do return none
+  let majorIdx := indVal.numParams + 1 + indVal.numIndices
+  let casesOnArgs := body.getAppArgs
+  unless casesOnArgs.size == majorIdx + 1 + indVal.numCtors do return none
+  let .bvar majorIdx' := casesOnArgs[majorIdx]! | return none
+  unless numAlts ≤ majorIdx' && majorIdx' < numBinders do return none
+  let major := args[numBinders - 1 - majorIdx']!
+  let .const ctorName _ := major.getAppFn | return none
+  let some (.ctorInfo ctorVal) := env.find? ctorName | return none
+  unless ctorVal.induct == indName && major.getAppNumArgs == ctorVal.numParams + ctorVal.numFields do
+    return none
+  let minor := casesOnArgs[majorIdx + 1 + ctorVal.cidx]!
+  -- the general path unfolds `dite` in `f` at these transparency settings
+  if (← getTransparency) matches .instances | .reducible then
+    if (minor.find? (·.isConstOf ``dite)).isSome then return none
+  -- Reduce the minor premise with placeholders for the matcher's arguments and the constructor
+  -- fields, so that only the small minor premise is traversed. The placeholders never enter the
+  -- local context.
+  let base ← mkFreshId
+  let placeholder (i : Nat) : Expr := mkFVar ⟨.num base i⟩
+  let fields := major.getAppArgs[ctorVal.numParams...*].toArray
+  let xs := (Array.range numBinders).map placeholder
+  let ys := (Array.range fields.size).map (placeholder <| numBinders + ·)
+  let r := (minor.instantiateRevRange 0 numBinders xs).betaRev ys.reverse
+  let .fvar fvarId := r.getAppFn | return none
+  let .num p j := fvarId.name | return none
+  unless p == base && prefixSz ≤ j && j < numBinders do return none
+  let isAlt (e : Expr) : Bool := e.isFVar && e.fvarId!.name.getPrefix == base &&
+    match e.fvarId!.name with | .num _ i => prefixSz ≤ i && i < numBinders | _ => false
+  if r.getAppArgs.any (·.find? isAlt |>.isSome) then return none
+  -- the general path unfolds `casesOn` and reduces the recursor
+  recordUnfold casesOnName
+  recordUnfold recVal.name
+  let rargs := r.getAppArgs.map (·.replaceFVars (xs[*...prefixSz] ++ ys) (args[*...prefixSz] ++ fields))
+  let result := mkAppN args[j]! rargs
+  return some (mkAppN result args[numBinders...args.size]).headBeta
+
+-- closed terms of code before existing declarations would be shared with them
+set_option compiler.extract_closed false in
+/--
+Reduces the application of the matcher `constInfo` to `args` with value `f` like `reduceMatcher?`,
+but faster for matchers with many alternatives: with `reduceCasesOnMatcher?` if applicable, and
+otherwise taking the types of the alternatives from the declared type of the matcher, which
+inferring the type of `f` applied to the parameters would compute by traversing all alternatives.
+Returns `none` if the declared type does not have enough binders.
+-/
+private def reduceMatcherFast? (constInfo : ConstantInfo) (declLevels : List Level) (f : Expr)
+    (args : Array Expr) (prefixSz numAlts : Nat) : MetaM (Option ReduceMatcherResult) := do
+  if let some result ← reduceCasesOnMatcher? f args prefixSz numAlts then
+    return some (.reduced result)
+  let matcherType ← instantiateTypeLevelParams constInfo.toConstantVal declLevels
+  let auxAppType@(.forallE ..) := matcherType.getForallBodyMaxDepth prefixSz | return none
+  let auxAppType := auxAppType.instantiateRevRange 0 prefixSz args
+  let mut f := f
+  if (← getTransparency) matches .instances | .reducible then
+    f ← unfoldNestedDIte f
+  let auxApp := mkAppN f args[*...prefixSz]
+  withMatcherAltFVars auxAppType numAlts fun hs => do
+    let auxApp ← whnfMatcher (mkAppN auxApp hs)
+    let auxAppFn := auxApp.getAppFn
+    let mut i := prefixSz
+    for h in hs do
+      if auxAppFn == h then
+        let result := mkAppN args[i]! auxApp.getAppArgs
+        let result := mkAppN result args[(prefixSz + numAlts)...args.size]
+        return some (.reduced result.headBeta)
+      i := i + 1
+    return some (.stuck auxApp)
+
 def reduceMatcher? (e : Expr) : MetaM ReduceMatcherResult := do
   let e := e.consumeMData
   let .const declName declLevels := e.getAppFn
@@ -545,6 +663,8 @@ def reduceMatcher? (e : Expr) : MetaM ReduceMatcherResult := do
     return ReduceMatcherResult.partialApp
   let constInfo ← getConstInfo declName
   let mut f ← instantiateValueLevelParams constInfo declLevels
+  if let some result ← reduceMatcherFast? constInfo declLevels f args prefixSz info.numAlts then
+    return result
   if (← getTransparency) matches .instances | .reducible then
     f ← unfoldNestedDIte f
   let auxApp := mkAppN f args[*...prefixSz]
