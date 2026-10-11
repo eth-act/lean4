@@ -26,7 +26,9 @@ functions, which have a (relatively) homogeneous ABI that we can use without run
 `call/lookup_symbol` below.
 
 */
+#include <algorithm>
 #include <string>
+#include <type_traits>
 #include <vector>
 #include <shared_mutex>
 #ifdef LEAN_WINDOWS
@@ -39,6 +41,7 @@ functions, which have a (relatively) homogeneous ABI that we can use without run
 #include "runtime/flet.h"
 #include "runtime/apply.h"
 #include "runtime/interrupt.h"
+#include "runtime/thread.h"
 #include "runtime/io.h"
 #include "runtime/option_ref.h"
 #include "runtime/array_ref.h"
@@ -270,7 +273,7 @@ union value {
     }
 };
 
-object * box_t(value v, type t) {
+static inline object * box_t(value v, type t) {
     switch (t) {
     case type::Float:   return box_float(v.m_float);
     case type::Float32: return box_float32(v.m_float32);
@@ -292,7 +295,7 @@ object * box_t(value v, type t) {
     lean_unreachable();
 }
 
-value unbox_t(object * o, type t) {
+static inline value unbox_t(object * o, type t) {
     switch (t) {
     case type::Float:   return value::from_float(unbox_float(o));
     case type::Float32: return value::from_float32(unbox_float32(o));
@@ -377,38 +380,218 @@ struct native_symbol_cache_entry {
 name_hash_map<native_symbol_cache_entry> * g_native_symbol_cache;
 std::shared_mutex * g_native_symbol_cache_mutex;
 
+struct constant_cache_entry {
+    bool m_is_scalar;
+    value m_val;
+};
+
+struct symbol_cache_entry {
+    decl m_decl;
+    native_symbol_cache_entry m_native;
+};
+
+/** \brief Open-addressing map from object addresses to `T *`. Keys are kept alive by the map so that their
+    addresses cannot be reused for different objects while it exists. */
+template<class T> class object_ptr_map {
+    struct slot {
+        object * m_key;
+        T * m_val;
+    };
+    std::vector<slot> m_slots;
+    size_t m_size = 0;
+    // `64 - log2(m_slots.size())`
+    unsigned m_shift = 64;
+
+    size_t index(object * k) const {
+        return static_cast<size_t>((reinterpret_cast<uint64>(k) * 0x9E3779B97F4A7C15ull) >> m_shift);
+    }
+
+    void grow() {
+        std::vector<slot> old;
+        old.swap(m_slots);
+        if (old.empty()) {
+            m_slots.assign(64, slot { nullptr, nullptr });
+            m_shift = 64 - 6;
+        } else {
+            m_slots.assign(old.size() * 2, slot { nullptr, nullptr });
+            m_shift--;
+        }
+        for (slot const & s : old) {
+            if (s.m_key) {
+                size_t mask = m_slots.size() - 1;
+                size_t i = index(s.m_key);
+                while (m_slots[i].m_key) i = (i + 1) & mask;
+                m_slots[i] = s;
+            }
+        }
+    }
+public:
+    object_ptr_map() {}
+    object_ptr_map(object_ptr_map const &) = delete;
+    ~object_ptr_map() {
+        for (slot const & s : m_slots) {
+            if (s.m_key) lean_dec(s.m_key);
+        }
+    }
+
+    inline T * find(object * k) const {
+        if (m_slots.empty()) return nullptr;
+        size_t mask = m_slots.size() - 1;
+        for (size_t i = index(k);; i = (i + 1) & mask) {
+            object * k2 = m_slots[i].m_key;
+            if (k2 == k) return m_slots[i].m_val;
+            if (!k2) return nullptr;
+        }
+    }
+
+    void insert(object * k, T * v) {
+        if (2 * (m_size + 1) > m_slots.size()) grow();
+        size_t mask = m_slots.size() - 1;
+        size_t i = index(k);
+        while (m_slots[i].m_key) {
+            if (m_slots[i].m_key == k) return;
+            i = (i + 1) & mask;
+        }
+        lean_inc(k);
+        m_slots[i] = slot { k, v };
+        m_size++;
+    }
+};
+
+/** \brief Interpreter caches. Their contents only depend on the interpreter's environment and options. */
+struct interpreter_caches {
+    // caches values of nullary functions ("constants")
+    name_hash_map<constant_cache_entry> m_constant_cache;
+    // caches symbol lookup successes _and_ failures
+    name_hash_map<symbol_cache_entry> m_symbol_cache;
+    // Entries of the caches above keyed by the name objects of IR call sites, which avoids structural name
+    // comparisons. Entries of node-based maps are address-stable, and we never erase any.
+    object_ptr_map<constant_cache_entry> m_constant_ptr_cache;
+    object_ptr_map<symbol_cache_entry> m_symbol_ptr_cache;
+
+    interpreter_caches() {}
+    interpreter_caches(interpreter_caches const &) = delete;
+    ~interpreter_caches() {
+        for (auto & it : m_constant_cache) {
+            if (!it.second.m_is_scalar) {
+                dec(it.second.m_val.m_obj);
+            }
+        }
+    }
+};
+
+/** \brief Caches retained across interpreter instances on the current thread for an environment and options that
+    are persistent, i.e. immutable and never freed, so that their addresses identify them for the rest of the
+    process. This is mostly the imported environment captured by closures stored in environment extensions,
+    each call of which would otherwise start an interpreter with empty caches. */
+struct retained_interpreter_caches {
+    object * m_env;
+    object * m_opts;
+    // number of active interpreters using `m_caches`
+    unsigned m_users = 0;
+    interpreter_caches m_caches;
+
+    retained_interpreter_caches(object * env, object * opts) : m_env(env), m_opts(opts) {}
+};
+
+static constexpr size_t g_max_retained_interpreter_caches = 8;
+typedef std::vector<retained_interpreter_caches *> retained_interpreter_caches_vector;
+
+LEAN_THREAD_PTR(retained_interpreter_caches_vector, g_retained_interpreter_caches);
+
+static void finalize_retained_interpreter_caches(void * p) {
+    auto * v = static_cast<retained_interpreter_caches_vector *>(p);
+    for (retained_interpreter_caches * c : *v) {
+        delete c;
+    }
+    delete v;
+    g_retained_interpreter_caches = nullptr;
+}
+
+extern "C" uint8_t lean_io_initializing();
+
+/** \brief Return retained caches for the given environment and options on the current thread if they are eligible,
+    or `nullptr`. Increments `m_users` of the result. */
+static retained_interpreter_caches * acquire_retained_interpreter_caches(object * env, object * opts) {
+    // Constants evaluated during initialization (e.g. reading `IO.initializing`) must not outlive it.
+    if (lean_io_initializing() || !lean_is_persistent(env) || !(lean_is_scalar(opts) || lean_is_persistent(opts))) {
+        return nullptr;
+    }
+    if (!g_retained_interpreter_caches) {
+        g_retained_interpreter_caches = new retained_interpreter_caches_vector();
+        register_thread_finalizer(finalize_retained_interpreter_caches, g_retained_interpreter_caches);
+    }
+    retained_interpreter_caches_vector & v = *g_retained_interpreter_caches;
+    for (size_t i = 0; i < v.size(); i++) {
+        if (v[i]->m_env == env && v[i]->m_opts == opts) {
+            // keep most recently used entries at the front
+            std::rotate(v.begin(), v.begin() + i, v.begin() + i + 1);
+            v[0]->m_users++;
+            return v[0];
+        }
+    }
+    if (v.size() >= g_max_retained_interpreter_caches) {
+        // evict least recently used entry not in use by an active interpreter
+        auto it = std::find_if(v.rbegin(), v.rend(), [](retained_interpreter_caches * c) { return c->m_users == 0; });
+        if (it == v.rend()) {
+            return nullptr;
+        }
+        delete *it;
+        v.erase(std::next(it).base());
+    }
+    v.insert(v.begin(), new retained_interpreter_caches(env, opts));
+    v[0]->m_users++;
+    return v[0];
+}
+
+/** \brief Stack of trivially copyable values with inlined operations except for reallocation. Growing leaves new
+    slots uninitialized. */
+template<class T> class interpreter_stack {
+    static_assert(std::is_trivially_copyable<T>::value, "interpreter_stack requires trivially copyable values");
+    // `m_buf.size()` is the capacity
+    std::vector<T> m_buf;
+    size_t m_size = 0;
+
+    void reserve(size_t n) {
+        m_buf.resize(std::max(n, 2 * m_buf.size()));
+    }
+public:
+    inline size_t size() const { return m_size; }
+    inline void resize(size_t n) {
+        if (n > m_buf.size()) reserve(n);
+        m_size = n;
+    }
+    inline void push_back(T v) {
+        if (m_size == m_buf.size()) reserve(m_size + 1);
+        m_buf[m_size++] = v;
+    }
+    inline T & operator[](size_t i) { return m_buf[i]; }
+};
+
 class interpreter {
     // stack of IR variable slots
-    std::vector<value> m_arg_stack;
+    interpreter_stack<value> m_arg_stack;
     // stack of join points
-    std::vector<fn_body const *> m_jp_stack;
+    interpreter_stack<fn_body const *> m_jp_stack;
     struct frame {
-        name m_fn;
+        // borrowed from the IR declaration, which is alive during the call
+        object * m_fn;
         // base pointers into the stack above
         size_t m_arg_bp;
         size_t m_jp_bp;
 
-        frame(name const & mFn, size_t mArgBp, size_t mJpBp) : m_fn(mFn), m_arg_bp(mArgBp), m_jp_bp(mJpBp) {}
+        frame(object * mFn, size_t mArgBp, size_t mJpBp) : m_fn(mFn), m_arg_bp(mArgBp), m_jp_bp(mJpBp) {}
     };
     std::vector<frame> m_call_stack;
     elab_environment const & m_env;
     options const & m_opts;
     // if `false`, use IR code where possible
     bool m_prefer_native;
-    struct constant_cache_entry {
-      bool m_is_scalar;
-      value m_val;
-    };
-    // caches values of nullary functions ("constants")
-    name_hash_map<constant_cache_entry> m_constant_cache;
-    struct symbol_cache_entry {
-        // looking up IR from .oleans is slow enough to warrant its own cache; but as local IR can
-        // be backtracked, this cache needs to be local as well.
-        decl m_decl;
-        native_symbol_cache_entry m_native;
-    };
-    // caches symbol lookup successes _and_ failures
-    name_hash_map<symbol_cache_entry> m_symbol_cache;
+    // looking up IR from .oleans is slow enough to warrant caching; but as local IR can be backtracked, caches are
+    // local to the interpreter unless `m_env` is persistent
+    retained_interpreter_caches * m_retained_caches;
+    interpreter_caches m_local_caches;
+    interpreter_caches & m_caches;
 
     /** \brief Get current stack frame */
     inline frame & get_frame() {
@@ -427,15 +610,14 @@ class interpreter {
     }
 
 public:
-    template<class T>
-    static inline T with_interpreter(elab_environment const & env, options const & opts, name const & fn, std::function<T(interpreter &)> const & f) {
+    template<class T, class F>
+    static inline T with_interpreter(elab_environment const & env, options const & opts, name const & fn, F const & f) {
         if (g_interpreter && is_eqp(g_interpreter->m_env, env) && is_eqp(g_interpreter->m_opts, opts)) {
             return f(*g_interpreter);
         } else {
             // We changed threads or the closure was stored and called in a different context.
             time_task t("interpretation", opts, fn);
             scope_trace_env scope_trace(env, opts);
-            // the caches contain data from the Environment, so we cannot reuse them when changing it
             interpreter interp(env, opts);
             flet<interpreter *> fl(g_interpreter, &interp);
             return f(interp);
@@ -551,7 +733,7 @@ private:
                 }
             }
             case expr_kind::PAp: { // unsatured (partial) application of top-level function
-                symbol_cache_entry sym = lookup_symbol(expr_pap_fun(e));
+                symbol_cache_entry const & sym = lookup_symbol(expr_pap_fun(e));
                 if (sym.m_native.m_addr) {
                     // point closure directly at native symbol
                     object * cls = alloc_closure(sym.m_native.m_addr, decl_params(sym.m_decl).size(), expr_pap_args(e).size());
@@ -632,7 +814,7 @@ private:
             ss << ex.what() << "\n";
             ss << "interpreter stacktrace:\n";
             for (unsigned i = 0; i < m_call_stack.size(); i++) {
-                ss << "#" << (i + 1) << " " << m_call_stack[m_call_stack.size() - i - 1].m_fn << "\n";
+                ss << "#" << (i + 1) << " " << TO_REF(name, m_call_stack[m_call_stack.size() - i - 1].m_fn) << "\n";
             }
             throw throwable(ss);
         }
@@ -651,9 +833,10 @@ private:
                     expr const & e = fn_body_vdecl_expr(b);
                     fn_body const & cont = fn_body_vdecl_cont(b);
                     // tail recursion?
-                    if (expr_tag(e) == expr_kind::FAp && expr_fap_fun(e) == get_frame().m_fn &&
-                        fn_body_tag(cont) == fn_body_kind::Ret && !arg_is_irrelevant(fn_body_ret_arg(cont)) &&
-                        arg_var_id(fn_body_ret_arg(cont)) == fn_body_vdecl_var(b)) {
+                    if (expr_tag(e) == expr_kind::FAp && fn_body_tag(cont) == fn_body_kind::Ret &&
+                        !arg_is_irrelevant(fn_body_ret_arg(cont)) &&
+                        arg_var_id(fn_body_ret_arg(cont)) == fn_body_vdecl_var(b) &&
+                        lean_name_eq(expr_fap_fun(e).raw(), get_frame().m_fn)) {
                         // tail recursion! copy argument values to parameter slots and reset `b`
                         array_ref<arg> const & args = expr_fap_args(e);
                         // argument and parameter slots may overlap, so first copy arguments to end of stack
@@ -807,7 +990,7 @@ private:
                        }
                        tout() << "\n";);
         });
-        m_call_stack.emplace_back(decl_fun_id(d), arg_bp, m_jp_stack.size());
+        m_call_stack.emplace_back(decl_fun_id(d).raw(), arg_bp, m_jp_stack.size());
     }
 
     void pop_frame(value DEBUG_CODE(r), type DEBUG_CODE(t)) {
@@ -823,26 +1006,35 @@ private:
        });
     }
 
-    /** \brief Return cached lookup result for given unmangled function name in the current binary. */
-    symbol_cache_entry lookup_symbol(name const & fn) {
-        auto e = m_symbol_cache.find(fn);
-        if (e != m_symbol_cache.end()) {
+    /** \brief Return cached lookup result for given unmangled function name in the current binary. `fn` must be a
+        name object from IR so that the number of name objects cached by address stays bounded. */
+    inline symbol_cache_entry const & lookup_symbol(name const & fn) {
+        if (symbol_cache_entry * e = m_caches.m_symbol_ptr_cache.find(fn.raw())) {
+            return *e;
+        }
+        symbol_cache_entry & e = lookup_symbol_core(fn);
+        m_caches.m_symbol_ptr_cache.insert(fn.raw(), &e);
+        return e;
+    }
+
+    /** \brief Like `lookup_symbol` for arbitrary `fn`. */
+    symbol_cache_entry & lookup_symbol_core(name const & fn) {
+        auto e = m_caches.m_symbol_cache.find(fn);
+        if (e != m_caches.m_symbol_cache.end()) {
             return e->second;
         }
         std::shared_lock<std::shared_mutex> lock(*g_native_symbol_cache_mutex);
         auto ne = g_native_symbol_cache->find(fn);
         if (ne != g_native_symbol_cache->end()) {
             symbol_cache_entry e_new { get_decl(fn), ne->second };
-            m_symbol_cache.insert({ fn, e_new });
-            return e_new;
+            return m_caches.m_symbol_cache.insert({ fn, e_new }).first->second;
         }
         lock.unlock();
         std::unique_lock<std::shared_mutex> unique_lock(*g_native_symbol_cache_mutex);
         ne = g_native_symbol_cache->find(fn);
         if (ne != g_native_symbol_cache->end()) {
             symbol_cache_entry e_new { get_decl(fn), ne->second };
-            m_symbol_cache.insert({ fn, e_new });
-            return e_new;
+            return m_caches.m_symbol_cache.insert({ fn, e_new }).first->second;
         }
         symbol_cache_entry e_new { get_decl(fn), {nullptr, false} };
         if (m_prefer_native || decl_tag(e_new.m_decl) == decl_kind::Extern || has_init_attribute(m_env, fn)) {
@@ -864,8 +1056,7 @@ private:
             }
         }
         g_native_symbol_cache->insert({ fn, e_new.m_native });
-        m_symbol_cache.insert({ fn, e_new });
-        return e_new;
+        return m_caches.m_symbol_cache.insert({ fn, e_new }).first->second;
     }
 
     /** \brief Retrieve Lean declaration from elab_environment. */
@@ -877,12 +1068,25 @@ private:
         return d.get().value();
     }
 
-    /** \brief Evaluate nullary function ("constant"). */
-    value load(name const & fn, type t) {
-        auto cached_entry = m_constant_cache.find(fn);
-        if (cached_entry != m_constant_cache.end()) {
-            auto cached = cached_entry->second;
-            return cached.m_val;
+    /** \brief Evaluate nullary function ("constant"). `fn` must be part of IR, see `lookup_symbol`. */
+    inline value load(name const & fn, type t) {
+        if (constant_cache_entry * c = m_caches.m_constant_ptr_cache.find(fn.raw())) {
+            return c->m_val;
+        }
+        constant_cache_entry * c = nullptr;
+        value r = load_core(fn, t, &c);
+        if (c) {
+            m_caches.m_constant_ptr_cache.insert(fn.raw(), c);
+        }
+        return r;
+    }
+
+    /** \brief Like `load` for arbitrary `fn`. Sets `cached` to the cache entry if the value is cached. */
+    value load_core(name const & fn, type t, constant_cache_entry ** cached) {
+        auto cached_entry = m_caches.m_constant_cache.find(fn);
+        if (cached_entry != m_caches.m_constant_cache.end()) {
+            *cached = &cached_entry->second;
+            return cached_entry->second.m_val;
         }
         auto o_entry = g_init_globals->find(fn);
         if (o_entry != g_init_globals->end()) {
@@ -891,7 +1095,7 @@ private:
             return type_is_scalar(t) ? unbox_t(o, t) : o;
         }
 
-        symbol_cache_entry e = lookup_symbol(fn);
+        symbol_cache_entry const & e = lookup_symbol_core(fn);
         if (e.m_native.m_addr) {
             // we can assume that all native code has been initialized (see e.g. `evalConst`)
 
@@ -928,14 +1132,17 @@ private:
         lean_always_assert(fn_body_tag(decl_fun_body(e.m_decl)) != fn_body_kind::Unreachable);
         value r = eval_body(decl_fun_body(e.m_decl));
         pop_frame(r, decl_type(e.m_decl));
-        m_constant_cache.insert({ fn, constant_cache_entry { type_is_scalar(t), r } });
+        auto ins = m_caches.m_constant_cache.insert({ fn, constant_cache_entry { type_is_scalar(t), r } });
+        if (ins.second) {
+            *cached = &ins.first->second;
+        }
         return r;
     }
 
     value call(name const & fn, array_ref<arg> const & args) {
         size_t old_size = m_arg_stack.size();
         value r;
-        symbol_cache_entry e = lookup_symbol(fn);
+        symbol_cache_entry const & e = lookup_symbol(fn);
         if (e.m_native.m_addr) {
             object ** args2 = static_cast<object **>(LEAN_ALLOCA(args.size() * sizeof(object *))); // NOLINT
             for (size_t i = 0; i < args.size(); i++) {
@@ -1043,18 +1250,17 @@ private:
         }
     }
 public:
-    explicit interpreter(elab_environment const & env, options const & opts) : m_env(env), m_opts(opts) {
-        m_prefer_native = opts.get_bool(*g_interpreter_prefer_native, LEAN_DEFAULT_INTERPRETER_PREFER_NATIVE);
-    }
+    explicit interpreter(elab_environment const & env, options const & opts) :
+        m_env(env), m_opts(opts),
+        m_prefer_native(opts.get_bool(*g_interpreter_prefer_native, LEAN_DEFAULT_INTERPRETER_PREFER_NATIVE)),
+        m_retained_caches(acquire_retained_interpreter_caches(env.raw(), opts.raw())),
+        m_caches(m_retained_caches ? m_retained_caches->m_caches : m_local_caches) {}
 
     interpreter(interpreter const &) = delete;
 
     ~interpreter() {
-        for (auto& it: m_constant_cache) {
-            auto e = it.second;
-            if (!e.m_is_scalar) {
-                dec(e.m_val.m_obj);
-            }
+        if (m_retained_caches) {
+            m_retained_caches->m_users--;
         }
     }
 
@@ -1063,12 +1269,13 @@ public:
      *  * supports under- and over-application.
      *  * supports "calling" (evaluating) nullary constants. */
     object * call_boxed(name const & fn, unsigned n, object ** args) {
-        symbol_cache_entry e = lookup_symbol(fn);
+        symbol_cache_entry const & e = lookup_symbol_core(fn);
         unsigned arity = decl_params(e.m_decl).size();
         object * r;
         if (arity == 0) {
             type t = decl_type(e.m_decl);
-            r = box_t(load(fn, t), t);
+            constant_cache_entry * cached;
+            r = box_t(load_core(fn, t, &cached), t);
             if (!type_is_scalar(t)) {
                 inc(r);
             }
@@ -1132,7 +1339,7 @@ public:
                 object * o = io_result_get_value(r);
                 mark_persistent(o);
                 dec_ref(r);
-                symbol_cache_entry e = lookup_symbol(decl);
+                symbol_cache_entry const & e = lookup_symbol_core(decl);
                 if (e.m_native.m_addr) {
                     *((object **)e.m_native.m_addr) = o;
                 } else {
