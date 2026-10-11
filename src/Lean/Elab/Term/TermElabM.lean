@@ -2266,3 +2266,62 @@ end Term
 open Term in
 def withoutModifyingStateWithInfoAndMessages [MonadControlT TermElabM m] [Monad m] (x : m α) : m α := do
   controlAt TermElabM fun runInBase => withoutModifyingStateWithInfoAndMessagesImpl <| runInBase x
+
+namespace Term
+open Meta
+
+register_builtin_option internal.dev.skipPropByBlocks : Bool := {
+  defValue := false
+  descr    := "(internal, set by `dev.skipProofs`) replace proposition-typed `by` blocks with \
+    `mkSkippedProof` instead of running them; not applied inside tactic blocks, which may construct \
+    data whose shape depends on their nested proofs"
+}
+
+/--
+Result of handling a `by` block under `internal.dev.skipPropByBlocks`. Not a `Bool`, which the
+compiler would substitute for `Bool` literals in the code that `.run` leads to.
+-/
+inductive SkipProofResult where
+  /-- The `by` block still has to be run. -/
+  | run
+  /-- The `by` block has been handled. -/
+  | done
+
+/-- `mdata` key marking the section variable arguments of `skippedProof`s from `mkSkippedProof`. -/
+def skippedProofMentionKey : Name := `_skippedProofMention
+
+/--
+Returns a stand-in for the proof `tacticCode` of `type` skipped by `internal.dev.skipPropByBlocks`:
+a local hypothesis of that type if there is one, as that is likely the actual proof (e.g., of a `get_elem_tactic` side goal) and keeps the hypothesis visible
+to unification (e.g., when the enclosing statement is a `simp` lemma). Otherwise, `skippedProof`
+applied to the section variables that `tacticCode` mentions (or seems to, judging by name only),
+each marked with `skippedProofMentionKey`. These mentions approximate which section variables the
+actual proof uses.
+-/
+def mkSkippedProof (type : Expr) (tacticCode : Syntax) : TermElabM Expr := do
+  -- assigning metavariables here could change the elaboration of the surrounding term
+  if !type.hasExprMVar then
+    -- like `findLocalDeclWithType?`, which is not imported here
+    let h? ← (← getLCtx).findDeclRevM? fun localDecl => do
+      if localDecl.isImplementationDetail then
+        return none
+      else if (← isDefEq type localDecl.type) then
+        return some localDecl.fvarId
+      else
+        return none
+    if let some h := h? then
+      return mkFVar h
+  let sectionFVarIds := (← read).sectionFVars.foldl (init := ({} : FVarIdSet)) fun s _ e =>
+    if e.isFVar then s.insert e.fvarId! else s
+  let lctx ← getLCtx
+  let mut vars : Array Expr := #[]
+  for s in tacticCode.topDown do
+    if s.isIdent then
+      if let some decl := lctx.findFromUserName? s.getId.eraseMacroScopes.getRoot then
+        if sectionFVarIds.contains decl.fvarId && !vars.contains decl.toExpr then
+          vars := vars.push decl.toExpr
+  let proofType ← vars.foldrM (init := type) fun v t => return mkForall `_ .default (← inferType v) t
+  let marker := KVMap.empty.insert skippedProofMentionKey (.ofBool true)
+  return mkAppN (mkApp (Lean.mkConst ``skippedProof) proofType) (vars.map (mkMData marker))
+
+end Term

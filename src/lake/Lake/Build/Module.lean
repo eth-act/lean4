@@ -979,6 +979,32 @@ def Module.buildLean
   mod.clearOutputHashes
   mod.computeArtifacts setup.isModule
 
+-- closed terms of code before existing declarations would be shared with them
+set_option compiler.extract_closed false in
+/-- Reads the development mode configuration (see `Env.DevConfig`). -/
+private def getDevConfig : JobM Env.DevConfig := do
+  match ← Env.DevConfig.compute.toBaseIO with
+  | .ok cfg => return cfg
+  | .error e => error e
+
+-- closed terms of code before existing declarations would be shared with them
+set_option compiler.extract_closed false in
+/--
+Applies the development options of `LEAN_DEV` to a module Lake has to (re)build, unless it has
+outputs built without them.
+-/
+private def Module.withDevOptions (mod : Module) (presetup : ModulePreSetup) : JobM ModulePreSetup := do
+  let dev ← getDevConfig
+  if dev.options.values.isEmpty || dev.checkModules.any (·.isPrefixOf mod.name) then
+    return presetup
+  -- outputs built without dev options (e.g., downloaded caches) are at least as good
+  if let .ok data ← readTraceFile mod.traceFile then
+    if data.depHash == presetup.trace.hash then
+      return presetup
+  return {presetup with
+    trace := presetup.trace.mix <| Module.recFetchPreSetup.traceOptions dev.options "dev options"
+    leanOptions := presetup.leanOptions ++ dev.options }
+
 /--
 Recursively build a Lean module.
 Fetch its dependencies and then elaborate the Lean source file, producing
@@ -993,6 +1019,7 @@ def Module.recBuildLean (mod : Module) : FetchM (Job ModuleOutputArtifacts) := d
   withRegisterJob mod.name.toString do
   let presetupJob ← mod.presetup.fetch
   presetupJob.mapM fun presetup => do
+    let presetup ← mod.withDevOptions presetup
     setTrace presetup.trace
     let arts ← fetchCore presetup
     let arts ← trackOutputsIfEnabled arts
