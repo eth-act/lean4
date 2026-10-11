@@ -721,14 +721,11 @@ file(WRITE "${CMAKE_BINARY_DIR}/lake-githash" "${LAKE_LEAN_GITHASH}")
 
 # Git HASH
 if(USE_GITHASH)
-  include(GetGitRevisionDescription)
-  get_git_head_revision(GIT_REFSPEC GIT_SHA1 ALLOW_LOOKING_ABOVE_CMAKE_SOURCE_DIR)
-  if(GIT_SHA1 MATCHES "GITDIR-NOTFOUND")
-    message(STATUS "Failed to read git_sha1")
-    set(GIT_SHA1 "")
-  else()
-    message(STATUS "git commit sha1: ${GIT_SHA1}")
-  endif()
+  # This development branch identifies as the upstream release it is based on, making its build
+  # outputs interchangeable with those of the release (Lake traces, `.olean` headers checked by
+  # release builds). Must be updated when rebasing onto another release.
+  set(GIT_SHA1 "819816b2e0a3bf405af45ae5c7af2491d8f5bee6")
+  message(STATUS "git commit sha1 (upstream release): ${GIT_SHA1}")
 else()
   if(USE_LAKE AND STAGE EQUAL 0)
     # Embed the stage0 tree hash so Lake invalidates stage 1 on stage 0 changes.

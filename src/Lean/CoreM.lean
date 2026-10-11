@@ -59,6 +59,19 @@ register_builtin_option internal.cmdlineSnapshots : Bool := {
     for the cmdline driver: diagnostics per command and final full snapshot"
 }
 
+register_builtin_option dev.skipProofs : Bool := {
+  defValue := false
+  descr    := "development mode: do not elaborate proofs. Proofs of theorems and examples, and \
+    proposition-typed `by` blocks in headers and other definitions (outside of tactic blocks), are \
+    replaced by the axiom `skippedProof`, unless that could change which section variables a \
+    definition abstracts over. WARNING: proofs are not checked at all"
+}
+
+register_builtin_option dev.skipLinters : Bool := {
+  defValue := false
+  descr    := "development mode: do not run any linters, regardless of individual linter options"
+}
+
 /--
 If the `diagnostics` option is not already set, gives a message explaining this option.
 Begins with a `\n\n`, so an error message can look like `m!"some error occurred{useDiagnosticMsg}"`.
