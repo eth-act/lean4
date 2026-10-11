@@ -72,6 +72,13 @@ register_builtin_option dev.skipLinters : Bool := {
   descr    := "development mode: do not run any linters, regardless of individual linter options"
 }
 
+register_builtin_option dev.trustSat : Bool := {
+  defValue := false
+  descr    := "development mode: when the SAT solver reports UNSAT in `bv_decide`, trust it instead \
+    of having it produce an LRAT certificate and checking that; the goal is closed with the axiom \
+    `skippedProof`. Counterexamples are still reported. WARNING: the SAT solver becomes trusted"
+}
+
 /--
 If the `diagnostics` option is not already set, gives a message explaining this option.
 Begins with a `\n\n`, so an error message can look like `m!"some error occurred{useDiagnosticMsg}"`.

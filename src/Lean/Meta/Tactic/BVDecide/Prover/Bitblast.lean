@@ -21,10 +21,13 @@ open Std.Tactic.BVDecide
 open Std.Tactic.BVDecide.Reflect
 
 /--
-Turn an `LratCert` into a proof that some `reflectedExpr` is UNSAT.
+Turn an `LratCert` into a proof that some `reflectedExpr` is UNSAT. Under `dev.trustSat`, the
+certificate is not checked and the proof is `skippedProof`.
 -/
 def LratCert.toReflectionProof (cert : LratCert) (ctx : TacticContext)
     (reflectionResult : ReflectionResult) : MetaM Expr := do
+  if dev.trustSat.get (← getOptions) then
+    return mkApp (mkConst ``skippedProof) (mkApp (mkConst ``BVLogicalExpr.Unsat) reflectionResult.expr)
   withTraceNode `Meta.Tactic.sat (fun _ => return "Compiling expr term") do
     mkAuxDecl ctx.exprDef reflectionResult.expr (mkConst ``BVLogicalExpr)
 

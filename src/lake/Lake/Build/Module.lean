@@ -1478,6 +1478,14 @@ def setupEditedModule
       options := mod.leanOptions
     }
 
+-- closed terms of code before existing declarations would be shared with them
+set_option compiler.extract_closed false in
+/-- Reads the development mode configuration (see `Env.DevConfig`). -/
+private def fetchDevConfig : FetchM Env.DevConfig := do
+  match ← Env.DevConfig.compute.toBaseIO with
+  | .ok cfg => return cfg
+  | .error e => error e
+
 /--
 Computes the module setup of Lean code external to the workspace,
 building its imports and other dependencies.
@@ -1520,6 +1528,23 @@ def setupExternalModule
       options := leanOpts
     }
 
+-- closed terms of code before existing declarations would be shared with them
+set_option compiler.extract_closed false in
+/-- `setupExternalModule` with the development options for files open in the editor. -/
+private def setupExternalModuleDev (fileName : String) (header : ModuleHeader) (leanOpts : LeanOptions) :
+    FetchM (Job ModuleSetup) := do
+  setupExternalModule fileName header (leanOpts ++ (← fetchDevConfig).editOptions)
+
+-- closed terms of code before existing declarations would be shared with them
+set_option compiler.extract_closed false in
+/-- `setupEditedModule` with the development options for files open in the editor. -/
+private def setupEditedModuleDev (mod : Module) (header : ModuleHeader) : FetchM (Job ModuleSetup) := do
+  let job ← setupEditedModule mod header
+  let dev ← fetchDevConfig
+  if dev.editOptions.values.isEmpty || dev.checkModules.any (·.isPrefixOf mod.name) then
+    return job
+  job.mapM (sync := true) fun setup => return { setup with options := setup.options ++ dev.editOptions }
+
 /--
 Computes the module setup of edited Lean code for the Lean language server,
 building its imports and other dependencies. Used by `lake setup-file`.
@@ -1534,9 +1559,9 @@ public def setupServerModule
     Lean.parseImports' (← IO.FS.readFile path) fileName
   if let some mod ← findModuleBySrc? path then
     logVerbose s!"file identified as module: {mod.name}"
-    setupEditedModule mod header
+    setupEditedModuleDev mod header
   else
-    setupExternalModule fileName header (← getServerOptions)
+    setupExternalModuleDev fileName header (← getServerOptions)
 
 /--
 Computes the arguments required to evaluate the Lean file with `lean`,
@@ -1557,7 +1582,7 @@ public def prepareLeanCommand
       mkSpawnArgs path setup mod.leanArgs
   else
     let header ← Lean.parseImports' (← IO.FS.readFile path) leanFile.toString
-    let setupJob ← setupExternalModule leanFile.toString header (← getLeanOptions)
+    let setupJob ← setupExternalModuleDev leanFile.toString header (← getLeanOptions)
     setupJob.mapM (sync := true) fun setup => do
       mkSpawnArgs path setup (← getLeanArgs)
 where

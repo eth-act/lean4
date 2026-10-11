@@ -90,14 +90,68 @@ public def ofFile (lratPath : System.FilePath) (trimProofs : Bool) : CoreM LratC
 
 end LratCert
 
+-- closed terms of code before existing declarations would be shared with them
+set_option compiler.extract_closed false in
+/--
+The file recording that the SAT problem `dimacs` is UNSAT under `dev.trustSat`, so that elaborating
+the same `bv_decide` call again (e.g., after an edit further up in the file) skips the solver. The
+problem is identified by its 64-bit hash and size.
+-/
+private def trustedUnsatFile? (dimacs : String) : BaseIO (Option System.FilePath) := do
+  let cacheHome? ← do
+    if let some dir ← IO.getEnv "XDG_CACHE_HOME" then
+      pure (some (System.FilePath.mk dir))
+    else
+      pure <| (← IO.getEnv "HOME").map (System.FilePath.mk · / ".cache")
+  return cacheHome?.map (· / "lean" / "trusted-unsat" / s!"{hash dimacs}-{dimacs.utf8ByteSize}")
+
+-- closed terms of code before existing declarations would be shared with them
+set_option compiler.extract_closed false in
+/--
+`runExternal` under `dev.trustSat`: the certificate is empty and previously solved problems are not
+solved again. Returns `none` if `dev.trustSat` is not set.
+-/
+private def runExternalTrusted? (cnf : CNF Nat) (solver : System.FilePath) (lratPath : System.FilePath)
+    (timeout : Nat) (binaryProofs : Bool) (solverMode : Elab.Tactic.BVDecide.SolverMode) :
+    CoreM (Option (Except (Array (Bool × Nat)) LratCert)) := do
+  unless dev.trustSat.get (← getOptions) do
+    return none
+  -- no `IO.FS.withTempFile`, `withTraceNode` etc. as in `runExternal`, whose specializations and
+  -- auxiliary declarations `runExternal` would use instead of creating its own
+  let dimacs := cnf.dimacs
+  let unsatFile? ← trustedUnsatFile? dimacs
+  if let some unsatFile := unsatFile? then
+    if ← unsatFile.pathExists then
+      trace[Meta.Tactic.sat] "UNSAT according to '{unsatFile}'"
+      return some (.ok "")
+  let (cnfHandle, cnfPath) ← IO.FS.createTempFile
+  let res ← try
+      cnfHandle.putStr dimacs
+      cnfHandle.flush
+      External.satQuery solver cnfPath lratPath timeout binaryProofs solverMode
+    finally
+      IO.FS.removeFile cnfPath
+  if let .sat assignment := res then
+    return some (.error assignment)
+  if let some unsatFile := unsatFile? then
+    -- best effort, the cache is only an optimization
+    try
+      if let some dir := unsatFile.parent then IO.FS.createDirAll dir
+      IO.FS.writeFile unsatFile ""
+    catch _ => pure ()
+  return some (.ok "")
+
 /--
 Run an external SAT solver on the `CNF` to obtain an LRAT proof.
 
-This will obtain an `LratCert` if the formula is UNSAT and throw errors otherwise.
+This will obtain an `LratCert` if the formula is UNSAT and throw errors otherwise. Under
+`dev.trustSat`, see `runExternalTrusted?`.
 -/
 public def runExternal (cnf : CNF Nat) (solver : System.FilePath) (lratPath : System.FilePath)
     (trimProofs : Bool) (timeout : Nat) (binaryProofs : Bool) (solverMode : Elab.Tactic.BVDecide.SolverMode) :
     CoreM (Except (Array (Bool × Nat)) LratCert) := do
+  if let some res ← runExternalTrusted? cnf solver lratPath timeout binaryProofs solverMode then
+    return res
   IO.FS.withTempFile fun cnfHandle cnfPath => do
     withTraceNode `Meta.Tactic.sat (fun _ => return "Serializing SAT problem to DIMACS file") do
       -- lazyPure to prevent compiler lifting

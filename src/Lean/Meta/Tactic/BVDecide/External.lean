@@ -137,6 +137,18 @@ where
         throwInterruptException
     x
 
+-- closed terms of code before existing declarations would be shared with them
+set_option compiler.extract_closed false in
+/--
+Under `dev.trustSat`, drops the arguments asking for an LRAT certificate from the arguments that
+`satQuery` passes to the solver: without a certificate to check, the solver should not spend time
+on producing one.
+-/
+private def dropLratArgs (args : Array String) : CoreM (Array String) := do
+  if dev.trustSat.get (← getOptions) then
+    return args.extract 0 1 ++ args.extract 4 args.size
+  return args
+
 /--
 Call the SAT solver in `solverPath` with `problemPath` as CNF input and ask it to output an LRAT
 UNSAT proof (binary or non-binary depending on `binaryProofs`) into `proofOutput`. To avoid runaway
@@ -161,6 +173,7 @@ public def satQuery (solverPath : System.FilePath) (problemPath : System.FilePat
     "--shrink=0"
   ]
   args := args ++ solverModeFlags mode
+  args ← dropLratArgs args
 
   -- We implement timeouting ourselves because cadicals -t option is not available on Windows.
   let out? ← runInterruptible timeout { cmd, args, stdin := .piped, stdout := .piped, stderr := .null }

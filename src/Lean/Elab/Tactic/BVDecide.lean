@@ -182,6 +182,12 @@ def evalBvTrace (target : Normalize.Target) (ctx : TacticContext) : Grind.GrindM
     let some lratFile := ctx.lratPath.fileName | throwError "could not find file name"
     return .check lratFile
 
+-- closed terms of code before existing declarations would be shared with them
+set_option compiler.extract_closed false in
+/-- `evalBvTrace`, without `dev.trustSat`: the suggested `bv_check` needs the LRAT certificate. -/
+def evalBvTraceCertified (target : Normalize.Target) (ctx : TacticContext) : Grind.GrindM TraceResult :=
+  withOptions (·.insert `dev.trustSat (.ofBool false)) <| evalBvTrace target ctx
+
 end BVTrace
 
 open Meta Tactic.BVDecide
@@ -210,7 +216,7 @@ def evalBvTraceTactic : Tactic := fun
     let g ← getMainGoal
     let params ← Grind.mkDefaultParams {}
     Grind.GrindM.run (params := params) do
-      match ← BVTrace.evalBvTrace (.mvarIdTarget g) ctx with
+      match ← BVTrace.evalBvTraceCertified (.mvarIdTarget g) ctx with
       | .normalize =>
         let normalizeStx ← `(tactic| bv_normalize $cfgStx:optConfig $[$typesStx:bvTypes]?)
         TryThis.addSuggestion tk normalizeStx (origSpan? := ← getRef)

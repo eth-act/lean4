@@ -161,12 +161,15 @@ public def computeCache? (elan? : Option ElanInstall) (toolchain : String) : Bas
 -- closed terms of code before existing declarations would be shared with them
 set_option compiler.extract_closed false in
 /--
-Parses `LEAN_DEV`, a comma-separated list of development shortcuts:
-* `checks`: skip kernel type checking and linters.
-* `proofs`: do not elaborate proofs (see the `dev.skipProofs` Lean option).
+Parses `LEAN_DEV`, a comma-separated list of development shortcuts, into options for modules Lake
+builds and options for files open in the editor:
+* `checks`: skip kernel type checking and linters in built modules.
+* `proofs`: do not elaborate proofs in built modules (see the `dev.skipProofs` Lean option).
+* `sat`: trust the SAT solver in `bv_decide`, also in the editor (see `dev.trustSat`).
 -/
-public def devOptionsOf (spec : String) : EIO String LeanOptions := do
+public def devOptionsOf (spec : String) : EIO String (LeanOptions × LeanOptions) := do
   let mut opts : Array LeanOption := #[]
+  let mut editOpts : Array LeanOption := #[]
   for s in spec.split ',' do
     match s.trimAscii.copy with
     | "" => pure ()
@@ -174,8 +177,11 @@ public def devOptionsOf (spec : String) : EIO String LeanOptions := do
       opts := opts.push ⟨`debug.skipKernelTC, .ofBool true⟩ |>.push ⟨`dev.skipLinters, .ofBool true⟩
     | "proofs" =>
       opts := opts.push ⟨`dev.skipProofs, .ofBool true⟩ |>.push ⟨`dev.skipLinters, .ofBool true⟩
-    | s => throw s!"'LEAN_DEV' contains unknown shortcut '{s}'; expected 'checks' or 'proofs'"
-  return LeanOptions.ofArray opts
+    | "sat" =>
+      opts := opts.push ⟨`dev.trustSat, .ofBool true⟩
+      editOpts := editOpts.push ⟨`dev.trustSat, .ofBool true⟩
+    | s => throw s!"'LEAN_DEV' contains unknown shortcut '{s}'; expected 'checks', 'proofs', or 'sat'"
+  return (LeanOptions.ofArray opts, LeanOptions.ofArray editOpts)
 
 /--
 Development mode configuration, from the environment variables `LEAN_DEV` (see `devOptionsOf`) and
@@ -184,6 +190,11 @@ Development mode configuration, from the environment variables `LEAN_DEV` (see `
 public structure DevConfig where
   /-- Lean options applied to every module Lake has to (re)build and mixed into its trace. -/
   options : LeanOptions
+  /--
+  The subset of `options` that also applies to files open in the editor (`lake setup-file`), which
+  are otherwise checked fully.
+  -/
+  editOptions : LeanOptions
   /-- Module name prefixes exempt from `options` (`LEAN_DEV_CHECK`). -/
   checkModules : Array Name
 
@@ -191,10 +202,10 @@ public structure DevConfig where
 set_option compiler.extract_closed false in
 /-- Reads the `DevConfig` from the environment. -/
 public def DevConfig.compute : EIO String DevConfig := do
-  let options ← devOptionsOf ((← IO.getEnv "LEAN_DEV").getD "")
+  let (options, editOptions) ← devOptionsOf ((← IO.getEnv "LEAN_DEV").getD "")
   let checkModules := (← IO.getEnv "LEAN_DEV_CHECK").getD "" |>.split ',' |>.toStringArray
     |>.filterMap fun s => let s := s.trimAscii.copy; if s.isEmpty then none else some s.toName
-  return { options, checkModules }
+  return { options, editOptions, checkModules }
 
 /--
 Compute a `Lake.Env` object from the given installs
