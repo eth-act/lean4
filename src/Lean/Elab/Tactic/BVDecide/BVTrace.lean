@@ -68,5 +68,14 @@ def evalBvTrace : Tactic := fun
       TryThis.addSuggestion tk bvCheckStx (origSpan? := ← getRef)
   | _ => throwUnsupportedSyntax
 
+/-
+After `evalBvTrace`, so that its compiled code does not change. Elaborators registered later take
+precedence; `no_fallback` keeps `evalBvTrace` from running with `dev.trustSat` after an error.
+-/
+@[builtin_tactic Lean.Parser.Tactic.bvTrace, no_fallback]
+def evalBvTraceCertified : Tactic := fun stx =>
+  -- the suggested `bv_check` needs the LRAT certificate
+  withOptions (·.insert `dev.trustSat (.ofBool false)) <| evalBvTrace stx
+
 end BVTrace
 end Lean.Elab.Tactic.BVDecide
