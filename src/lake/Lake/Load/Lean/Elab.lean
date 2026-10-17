@@ -229,6 +229,8 @@ public def importConfigFile (cfg : LoadConfig) : LogIO Environment := do
       error <| s!"could not acquire an exclusive configuration lock; " ++
         "another process may already be reconfiguring the package"
   let configHash ← computeTextFileHash cfg.configFile
+  -- mark configurations elaborated by this development toolchain (see `devToolchainTrace`)
+  let devLeanHash := cfg.lakeEnv.leanGithash ++ "+dev"
   let elabConfig h (lakeOpts : NameMap String) : LogIO Environment := id do
     /-
     Remark:
@@ -244,7 +246,7 @@ public def importConfigFile (cfg : LoadConfig) : LogIO Environment := do
     match (← IO.FS.removeFile olean |>.toBaseIO) with
     | .ok _ | .error (.noFileOrDirectory ..) =>
       h.putStrLn <| Json.pretty <| toJson
-        {platform := System.Platform.target, leanHash := cfg.lakeEnv.leanGithash,
+        {platform := System.Platform.target, leanHash := devLeanHash,
           configHash, idx := cfg.pkgIdx, name := cfg.pkgName, options := lakeOpts : ConfigTrace}
       -- Flush before `truncate` (which sets the file size without flushing buffered
       -- writes) and before the slow elaboration below, so a process killed
@@ -272,7 +274,8 @@ public def importConfigFile (cfg : LoadConfig) : LogIO Environment := do
         | .ok (trace : ConfigTrace) =>
           let upToDate := (← olean.pathExists) ∧
             trace.idx = cfg.pkgIdx ∧ trace.name = cfg.pkgName ∧  trace.configHash = configHash ∧
-            trace.platform = System.Platform.target ∧  trace.leanHash = cfg.lakeEnv.leanGithash
+            trace.platform = System.Platform.target ∧
+            (trace.leanHash = cfg.lakeEnv.leanGithash ∨ trace.leanHash = devLeanHash)
           if upToDate then
             let env ← importConfigFileCore olean cfg.leanOpts
             h.unlock
