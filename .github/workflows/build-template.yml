@@ -132,11 +132,9 @@ jobs:
           cd build
           # arguments passed to `cmake`
           OPTIONS=(-DWFAIL=ON)
-          if [[ -n '${{ matrix.release }}' ]]; then
-            # this also enables githash embedding into stage 1 library, which prohibits reusing
-            # `.olean`s across commits, so we don't do it in the fast non-release CI
-            OPTIONS+=(-DCHECK_OLEAN_VERSION=ON)
-          fi
+          # No `CHECK_OLEAN_VERSION` in release builds: this branch's binary reports the upstream
+          # release githash (see `src/CMakeLists.txt`), while stage 0 would stamp the stage 1 library
+          # with this commit's, which the check would then reject.
           if [[ -n '${{ matrix.cross_target }}' ]]; then
             # used by `prepare-llvm`
             export EXTRA_FLAGS=--target=${{ matrix.cross_target }}
