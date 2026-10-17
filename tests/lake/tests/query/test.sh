@@ -29,8 +29,9 @@ test_eq '["C","B"]' query +A:transImports --json
 $LAKE query +A:setup --json | $LAKE env lean --run pretty.lean |
   diff -u --strip-trailing-cr .lake/build/ir/A.setup.json -
 
-# Test querying a module's dependency hash
-match_text $($LAKE query +A:depHash) .lake/build/lib/lean/A.trace
+# Test querying a module's dependency hash, i.e., the hash of official toolchains,
+# which this development toolchain marks in the traces of modules it builds (see `devMarker`)
+no_match_text $($LAKE query +A:depHash) .lake/build/lib/lean/A.trace
 test_eq "\"$($LAKE query +A:depHash)\"" query +A:depHash --json
 
 # Test querying deps

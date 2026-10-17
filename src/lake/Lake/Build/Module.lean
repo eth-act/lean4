@@ -1002,19 +1002,28 @@ private def getDevConfig : JobM Env.DevConfig := do
 -- closed terms of code before existing declarations would be shared with them
 set_option compiler.extract_closed false in
 /--
-Applies the development options of `LEAN_DEV` to a module Lake has to (re)build, unless it has
-outputs built without them.
+Every module this development toolchain builds gets a trace marked by `devToolchainTrace`, with the
+development options of `LEAN_DEV`. The `depHash` facet still reports the unmarked hash, which
+official toolchains use.
 -/
-private def Module.withDevOptions (mod : Module) (presetup : ModulePreSetup) : JobM ModulePreSetup := do
+private def Module.withDevMarker (mod : Module) (presetup : ModulePreSetup) : JobM ModulePreSetup := do
+  let savedTrace ← readTraceFile mod.traceFile
+  let hasOutputsFor (trace : BuildTrace) : JobM Bool := do
+    let .ok data := savedTrace | return false
+    if data.depHash != trace.hash then return false
+    mod.checkExists presetup.isModule
+  -- existing official outputs (e.g., downloaded caches) are at least as good
+  if (← hasOutputsFor presetup.trace) then
+    return presetup
+  let trace := presetup.trace.mix devToolchainTrace
   let dev ← getDevConfig
   if dev.options.values.isEmpty || dev.checkModules.any (·.isPrefixOf mod.name) then
-    return presetup
-  -- outputs built without dev options (e.g., downloaded caches) are at least as good
-  if let .ok data ← readTraceFile mod.traceFile then
-    if data.depHash == presetup.trace.hash then
-      return presetup
+    return {presetup with trace}
+  -- so are existing outputs built by this toolchain without dev options
+  if (← hasOutputsFor trace) then
+    return {presetup with trace}
   return {presetup with
-    trace := presetup.trace.mix <| Module.recFetchPreSetup.traceOptions dev.options "dev options"
+    trace := trace.mix <| Module.recFetchPreSetup.traceOptions dev.options "dev options"
     leanOptions := presetup.leanOptions ++ dev.options }
 
 /--
@@ -1031,7 +1040,7 @@ def Module.recBuildLean (mod : Module) : FetchM (Job ModuleOutputArtifacts) := d
   withRegisterJob mod.name.toString do
   let presetupJob ← mod.presetup.fetch
   presetupJob.mapM fun presetup => do
-    let presetup ← mod.withDevOptions presetup
+    let presetup ← mod.withDevMarker presetup
     setTrace presetup.trace
     let arts ← fetchCore presetup
     let arts ← trackOutputsIfEnabled arts
