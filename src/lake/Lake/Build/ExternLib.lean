@@ -41,6 +41,7 @@ public def buildLeanSharedLibOfStatic
     addPureTrace traceArgs
     addPlatformTrace -- shared libraries are platform-dependent artifacts
     let dynlib := staticLib.withExtension sharedLibExt
+    markDevTrace dynlib
     buildFileUnlessUpToDate' dynlib do
       let lean ← getLeanInstall
       let baseArgs :=
