@@ -137,11 +137,21 @@ if [[ ${LAKE_CACHE_DIR-} == "$elanHome/toolchains/"* ]]; then unset LAKE_CACHE_D
 export LEAN_DEV=${LEAN_DEV-proofs,sat}
 lake=$devDir/bin/lake
 
+# Absolute path of `$1`, resolving symlinks where it exists (macOS `realpath` lacks `-m`).
+abs_path() {
+  local p=$1 d
+  [[ $p == /* ]] || p=$PWD/$p
+  if [[ -d $p ]]; then (cd -P -- "$p" && pwd -P); return; fi
+  d=$(dirname -- "$p")
+  if [[ -d $d ]]; then d=$(cd -P -- "$d" && pwd -P); fi
+  echo "$d/$(basename -- "$p")"
+}
+
 srcPath=
 # Module name of a Lean source file, relative to the longest matching source directory.
 module_of_path() {
   local file best="" dir
-  file=$(realpath -m -- "$1")
+  file=$(abs_path "$1")
   if [[ -z $srcPath ]]; then
     srcPath=$("$lake" -d "$root" env printenv LEAN_SRC_PATH) ||
       die "could not determine the source directories of the project"
@@ -149,7 +159,7 @@ module_of_path() {
   local IFS=:
   for dir in $srcPath; do
     [[ -n $dir ]] || continue
-    dir=$(realpath -m -- "$dir")
+    dir=$(abs_path "$dir")
     if [[ $file == "$dir"/* && ${#dir} -gt ${#best} ]]; then best=$dir; fi
   done
   [[ -n $best ]] || best=$root
@@ -190,7 +200,7 @@ case $cmd in
     done ;;
   lean)
     (($#)) || die "usage: fast-lean lean <file> [-- args...]"
-    args=("$(realpath -m -- "$1")"); shift
+    args=("$(abs_path "$1")"); shift
     args+=("$@") ;;
   *) args=("$@") ;;
 esac
@@ -202,4 +212,5 @@ fi
 mode=${LEAN_DEV:-faithful}
 [[ -n $LEAN_DEV ]] && mode="LEAN_DEV=$mode"
 echo "fast-lean: $devToolchain, $mode${LEAN_DEV_CHECK:+, checking $LEAN_DEV_CHECK}" >&2
-exec "$lake" -d "$root" "$cmd" "${args[@]}"
+# `${args[@]+…}`: expanding an empty array is an error under `set -u` in bash < 4.4 (e.g. macOS)
+exec "$lake" -d "$root" "$cmd" ${args[@]+"${args[@]}"}
