@@ -39,12 +39,41 @@ fast_out() {
 
 test_cmd_out "Usage: fast-lean" "$FAST_LEAN" --help
 
-# Outside a project or without a matching toolchain
+# An "official" `lake` and `elan` on `PATH`, so that falling back and installing stay offline
+mkdir -p official
+cat > official/lake <<'EOF'
+#!/usr/bin/env bash
+echo "official lake: $*"
+EOF
+cat > official/elan <<'EOF'
+#!/usr/bin/env bash
+# installs a fake toolchain `<owner>/<repo>:<tag>` into elan's directory naming scheme
+[ "$1 $2" = "toolchain install" ] || exit 2
+dir=$ELAN_HOME/toolchains/$(echo "$3" | sed 's|/|--|g; s|:|---|g')
+mkdir -p "$dir/bin" && cp "$ELAN_HOME/toolchains/dev-fast-v4.0.0/bin/lake" "$dir/bin/lake"
+echo "installed $3"
+EOF
+chmod +x official/lake official/elan
+export PATH="$PWD/official:$PATH"
+export FAST_LEAN_VERSIONS=$PWD/versions.txt
+echo "v4.2.0 test/lean4:dev-fast-v4.2.0-1" > versions.txt
+
+# Outside a project, or without a fast toolchain for the project's version: plain `lake`
 (cd / && fast_out build) && exit 1
 match_text "not inside a Lake project" produced.out
 echo "leanprover/lean4:v4.1.0" > proj/lean-toolchain
-(cd proj && fast_out build) && exit 1
-match_text "no fast toolchain for v4.1.0" produced.out
+(cd proj && fast_out build Foo.Bar)
+match_text "no fast toolchain for v4.1.0; running plain lake" produced.out
+match_text "official lake: -d $ROOT build Foo.Bar" produced.out
+
+# A version in the version map is installed on first use, and reused afterwards
+echo "leanprover/lean4:v4.2.0" > proj/lean-toolchain
+(cd proj && fast_out build)
+match_text "installing test/lean4:dev-fast-v4.2.0-1" produced.out
+match_text "ELAN_TOOLCHAIN=test/lean4:dev-fast-v4.2.0-1" produced.out
+match_text "lean: $ELAN_HOME/toolchains/test--lean4---dev-fast-v4.2.0-1/bin" produced.out
+(cd proj && fast_out build)
+no_match_text "installing" produced.out
 echo "leanprover/lean4:v4.0.0" > proj/lean-toolchain
 
 # Defaults, toolchain-specific variables, and invocation from a subdirectory

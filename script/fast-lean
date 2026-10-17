@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs Lake from the development toolchain matching the enclosing project's `lean-toolchain`.
-# Install by linking it into a directory on `PATH`, e.g. `ln -s "$PWD/script/fast-lean" ~/.local/bin/`.
+# Install with the `install.sh` of the `fast-lean-dist` branch, or by linking it onto `PATH`.
 set -euo pipefail
 
 usage() {
@@ -8,9 +8,12 @@ usage() {
 Usage: fast-lean <command> [args...]
 
 Runs Lake from the development toolchain matching the `lean-toolchain` of the enclosing Lake
-project: for `leanprover/lean4:vX.Y.Z`, the elan toolchain `dev-fast-vX.Y.Z` (e.g., registered
-with `elan toolchain link dev-fast-vX.Y.Z <stage1 dir>`). Neither `lean-toolchain` nor elan
-overrides are touched, so plain `lake`/`lean` keep using the official toolchain.
+project (`leanprover/lean4:vX.Y.Z`). That is the elan toolchain `dev-fast-vX.Y.Z` if one is
+registered (e.g., with `elan toolchain link dev-fast-vX.Y.Z <stage1 dir>`), and otherwise the
+release listed for vX.Y.Z in the version map, which is installed with elan on first use. Without a
+fast toolchain for the project's version, fast-lean says so and runs plain `lake`. Neither
+`lean-toolchain` nor elan overrides are touched, so plain `lake`/`lean` keep using the official
+toolchain.
 
 Commands:
   build [targets...] [options]   `lake build`. Modules named as targets (`Foo.Bar`, `+Foo`, or a
@@ -28,6 +31,10 @@ Environment:
                     proofs   do not elaborate proofs (they use the axiom `skippedProof`)
                     sat      trust the SAT solver in `bv_decide` (also in `fast-lean lean`)
   LEAN_DEV_CHECK  More comma-separated module name prefixes to check fully.
+  FAST_LEAN_VERSIONS
+                  Version map: a URL or file with lines `<Lean version> <elan toolchain>`, e.g.
+                  `v4.34.0 eth-act/lean4:dev-fast-v4.34.0-1`. Default: the map published with
+                  fast-lean. Downloads are cached for an hour and reused when offline.
 
 A bare target name without a dot (e.g., `Foo`) is a library or package and does not disable
 shortcuts; use `+Foo` for the module `Foo`. Checked names are prefixes: `Foo.Bar` also covers
@@ -67,15 +74,59 @@ root=$(find_up lakefile.lean lakefile.toml) || die "not inside a Lake project (n
 tcdir=$(find_up lean-toolchain) || die "no lean-toolchain file found"
 read -r toolchain < "$tcdir/lean-toolchain" || true
 toolchain=${toolchain//[[:space:]]/}
-[[ $toolchain == leanprover/lean4:* ]] ||
-  die "unsupported toolchain '$toolchain' in $tcdir/lean-toolchain; use plain lake"
-version=${toolchain#leanprover/lean4:}
-[[ $version == v* ]] || version=v$version
-devToolchain=dev-fast-$version
+version=
+if [[ $toolchain == leanprover/lean4:* ]]; then
+  version=${toolchain#leanprover/lean4:}
+  [[ $version == v* ]] || version=v$version
+fi
 elanHome=${ELAN_HOME:-$HOME/.elan}
-devDir=$elanHome/toolchains/$devToolchain
-[[ -x $devDir/bin/lake ]] ||
-  die "no fast toolchain for $version (no elan toolchain '$devToolchain'); use plain lake"
+versionsUrl=${FAST_LEAN_VERSIONS:-https://raw.githubusercontent.com/eth-act/lean4/fast-lean-dist/versions.txt}
+
+# Prints the contents of the version map, downloading it if the cached copy is older than an hour.
+version_map() {
+  if [[ $versionsUrl != *://* ]]; then
+    cat -- "$versionsUrl" 2>/dev/null
+    return 0
+  fi
+  local cache=${XDG_CACHE_HOME:-$HOME/.cache}/fast-lean/versions.txt
+  if [[ ! -f $cache || -n $(find "$cache" -mmin +60 2>/dev/null) ]]; then
+    mkdir -p "$(dirname "$cache")"
+    if curl -fsSL --max-time 10 "$versionsUrl" -o "$cache.tmp" 2>/dev/null; then
+      mv "$cache.tmp" "$cache"
+    else
+      rm -f "$cache.tmp"
+    fi
+  fi
+  cat -- "$cache" 2>/dev/null || true
+}
+
+# The elan toolchain to use for `$version`, empty if there is none.
+fast_toolchain() {
+  [[ -n $version ]] || return 0
+  if [[ -x $elanHome/toolchains/dev-fast-$version/bin/lake ]]; then
+    echo "dev-fast-$version"
+    return 0
+  fi
+  local v tc
+  while read -r v tc _; do
+    if [[ $v == "$version" && -n $tc ]]; then echo "$tc"; return 0; fi
+  done < <(version_map)
+}
+
+devToolchain=$(fast_toolchain)
+if [[ -z $devToolchain ]]; then
+  echo "fast-lean: no fast toolchain for ${version:-'$toolchain'}; running plain lake" >&2
+  exec lake -d "$root" "$@"
+fi
+# elan's directory name for a toolchain, e.g. `eth-act--lean4---dev-fast-v4.34.0-1`
+devDirName=${devToolchain//\//--}
+devDirName=${devDirName//:/---}
+devDir=$elanHome/toolchains/$devDirName
+if [[ ! -x $devDir/bin/lake ]]; then
+  echo "fast-lean: installing $devToolchain" >&2
+  elan toolchain install "$devToolchain" >&2 || die "could not install $devToolchain"
+  [[ -x $devDir/bin/lake ]] || die "$devToolchain has no lake at $devDir/bin"
+fi
 
 # Make `lean`/`lake` subprocesses come from the development toolchain, also when run from within
 # another toolchain's `lake env`.
