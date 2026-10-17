@@ -207,6 +207,9 @@ namespace Module
 @[inherit_doc dynlibFacet] public abbrev dynlib (self : Module) :=
   self.facetCore dynlibFacet
 
+@[inherit_doc depHashFacet] public abbrev depHash (self : Module) :=
+  self.facetCore depHashFacet
+
 end Module
 
 /-! #### Package Infos -/

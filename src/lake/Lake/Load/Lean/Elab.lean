@@ -172,6 +172,15 @@ structure ConfigTrace where
   options : NameMap String
   deriving ToJson, FromJson
 
+-- closed terms of code before existing declarations would be shared with them
+set_option compiler.extract_closed false in
+/--
+The `leanHash` with which this development toolchain marks the configurations it elaborates (see
+`devToolchainTrace`). Not inlined, so that the code of `importConfigFile` has no new closed terms.
+-/
+@[noinline] private def devLeanHashOf (leanGithash : String) : String :=
+  leanGithash ++ "+dev"
+
 /--
 Import the `.olean` for the configuration file if `reconfigure` is not set and
 an up-to-date one exists (i.e., one with matching configuration and on the same
@@ -229,6 +238,7 @@ public def importConfigFile (cfg : LoadConfig) : LogIO Environment := do
       error <| s!"could not acquire an exclusive configuration lock; " ++
         "another process may already be reconfiguring the package"
   let configHash ← computeTextFileHash cfg.configFile
+  let devLeanHash := devLeanHashOf cfg.lakeEnv.leanGithash
   let elabConfig h (lakeOpts : NameMap String) : LogIO Environment := id do
     /-
     Remark:
@@ -244,7 +254,7 @@ public def importConfigFile (cfg : LoadConfig) : LogIO Environment := do
     match (← IO.FS.removeFile olean |>.toBaseIO) with
     | .ok _ | .error (.noFileOrDirectory ..) =>
       h.putStrLn <| Json.pretty <| toJson
-        {platform := System.Platform.target, leanHash := cfg.lakeEnv.leanGithash,
+        {platform := System.Platform.target, leanHash := devLeanHash,
           configHash, idx := cfg.pkgIdx, name := cfg.pkgName, options := lakeOpts : ConfigTrace}
       h.truncate
       let env ← elabConfigFile
@@ -269,7 +279,8 @@ public def importConfigFile (cfg : LoadConfig) : LogIO Environment := do
         | .ok (trace : ConfigTrace) =>
           let upToDate := (← olean.pathExists) ∧
             trace.idx = cfg.pkgIdx ∧ trace.name = cfg.pkgName ∧  trace.configHash = configHash ∧
-            trace.platform = System.Platform.target ∧  trace.leanHash = cfg.lakeEnv.leanGithash
+            trace.platform = System.Platform.target ∧
+            (trace.leanHash = cfg.lakeEnv.leanGithash ∨ trace.leanHash = devLeanHash)
           if upToDate then
             let env ← importConfigFileCore olean cfg.leanOpts
             h.unlock

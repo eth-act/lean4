@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+# Runs Lake from the development toolchain matching the enclosing project's `lean-toolchain`.
+# Install by linking it into a directory on `PATH`, e.g. `ln -s "$PWD/script/fast-lean" ~/.local/bin/`.
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: fast-lean <command> [args...]
+
+Runs Lake from the development toolchain matching the `lean-toolchain` of the enclosing Lake
+project: for `leanprover/lean4:vX.Y.Z`, the elan toolchain `dev-fast-vX.Y.Z` (e.g., registered
+with `elan toolchain link dev-fast-vX.Y.Z <stage1 dir>`). Neither `lean-toolchain` nor elan
+overrides are touched, so plain `lake`/`lean` keep using the official toolchain.
+
+Commands:
+  build [targets...] [options]   `lake build`. Modules named as targets (`Foo.Bar`, `+Foo`, or a
+                                 path `Foo/Bar.lean`) are checked fully, while the modules they
+                                 depend on take shortcuts.
+  lean <file> [-- args...]       `lake lean`: elaborates <file> fully (except for `sat`), while
+                                 its imports take shortcuts.
+  env [cmd [args...]]            `lake env`.
+  <command> [args...]            Any other Lake command (e.g., `test`, `exe`, `query`, `clean`).
+
+Environment:
+  LEAN_DEV        Shortcuts for the modules Lake (re)builds; default `proofs,sat`. Set it to the
+                  empty string to build faithfully. A comma-separated list of:
+                    checks   skip kernel type checking and linters
+                    proofs   do not elaborate proofs (they use the axiom `skippedProof`)
+                    sat      trust the SAT solver in `bv_decide` (also in `fast-lean lean`)
+  LEAN_DEV_CHECK  More comma-separated module name prefixes to check fully.
+
+A bare target name without a dot (e.g., `Foo`) is a library or package and does not disable
+shortcuts; use `+Foo` for the module `Foo`. Checked names are prefixes: `Foo.Bar` also covers
+`Foo.Bar.*`.
+
+Guarantee: everything Lake builds here (modules, native code, elaborated Lake configurations) gets
+a trace that the official toolchain does not accept. A later plain `lake build` rebuilds, and thus
+fully checks with the official toolchain, every module built by fast-lean; official outputs that
+are still up to date are kept. Conversely, fast-lean reuses official outputs (e.g., from the
+Mathlib cache) as they are.
+
+SAT cache: under `sat`, `bv_decide` problems found UNSAT are remembered and not solved again.
+Clear the cache with
+  rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/lean/trusted-unsat"
+EOF
+}
+
+die() { echo "fast-lean: $*" >&2; exit 1; }
+
+case "${1-}" in
+  ""|-h|--help|help) usage; exit 0 ;;
+esac
+
+# Nearest ancestor of the working directory containing one of the given files.
+find_up() {
+  local dir=$PWD f
+  while :; do
+    for f in "$@"; do
+      if [[ -f $dir/$f ]]; then echo "$dir"; return 0; fi
+    done
+    [[ $dir == / ]] && return 1
+    dir=$(dirname -- "$dir")
+  done
+}
+
+root=$(find_up lakefile.lean lakefile.toml) || die "not inside a Lake project (no lakefile found)"
+tcdir=$(find_up lean-toolchain) || die "no lean-toolchain file found"
+read -r toolchain < "$tcdir/lean-toolchain" || true
+toolchain=${toolchain//[[:space:]]/}
+[[ $toolchain == leanprover/lean4:* ]] ||
+  die "unsupported toolchain '$toolchain' in $tcdir/lean-toolchain; use plain lake"
+version=${toolchain#leanprover/lean4:}
+[[ $version == v* ]] || version=v$version
+devToolchain=dev-fast-$version
+elanHome=${ELAN_HOME:-$HOME/.elan}
+devDir=$elanHome/toolchains/$devToolchain
+[[ -x $devDir/bin/lake ]] ||
+  die "no fast toolchain for $version (no elan toolchain '$devToolchain'); use plain lake"
+
+# Make `lean`/`lake` subprocesses come from the development toolchain, also when run from within
+# another toolchain's `lake env`.
+export PATH="$devDir/bin:$PATH"
+export ELAN_TOOLCHAIN=$devToolchain
+unset LAKE LAKE_HOME LAKE_OVERRIDE_LEAN LEAN LEAN_SYSROOT LEAN_AR LEAN_GITHASH
+if [[ ${LAKE_CACHE_DIR-} == "$elanHome/toolchains/"* ]]; then unset LAKE_CACHE_DIR; fi
+export LEAN_DEV=${LEAN_DEV-proofs,sat}
+lake=$devDir/bin/lake
+
+srcPath=
+# Module name of a Lean source file, relative to the longest matching source directory.
+module_of_path() {
+  local file best="" dir
+  file=$(realpath -m -- "$1")
+  if [[ -z $srcPath ]]; then
+    srcPath=$("$lake" -d "$root" env printenv LEAN_SRC_PATH) ||
+      die "could not determine the source directories of the project"
+  fi
+  local IFS=:
+  for dir in $srcPath; do
+    [[ -n $dir ]] || continue
+    dir=$(realpath -m -- "$dir")
+    if [[ $file == "$dir"/* && ${#dir} -gt ${#best} ]]; then best=$dir; fi
+  done
+  [[ -n $best ]] || best=$root
+  file=${file#"$best"/}
+  file=${file%.lean}
+  echo "${file//\//.}"
+}
+
+cmd=$1; shift
+args=()
+checked=()
+case $cmd in
+  build)
+    while (($#)); do
+      arg=$1; shift
+      case $arg in
+        --) args+=("$arg" "$@"); break ;;
+        -d|-f|-o|-K|--dir|--file|--log-level|--fail-level|--packages)
+          args+=("$arg"); if (($#)); then args+=("$1"); shift; fi ;;
+        -*) args+=("$arg") ;;
+        *)
+          spec=${arg%%:*}
+          facet=${arg#"$spec"}
+          if [[ $spec == *.lean ]]; then
+            mod=$(module_of_path "$spec")
+            checked+=("$mod")
+            args+=("+$mod$facet")
+          else
+            target=${spec#*/}
+            case $target in
+              +*) checked+=("${target#+}") ;;
+              @*|*/*) ;;
+              *.*) checked+=("$target") ;;
+            esac
+            args+=("$arg")
+          fi ;;
+      esac
+    done ;;
+  lean)
+    (($#)) || die "usage: fast-lean lean <file> [-- args...]"
+    args=("$(realpath -m -- "$1")"); shift
+    args+=("$@") ;;
+  *) args=("$@") ;;
+esac
+
+if ((${#checked[@]})); then
+  extra=$(IFS=,; echo "${checked[*]}")
+  export LEAN_DEV_CHECK=${LEAN_DEV_CHECK:+$LEAN_DEV_CHECK,}$extra
+fi
+mode=${LEAN_DEV:-faithful}
+[[ -n $LEAN_DEV ]] && mode="LEAN_DEV=$mode"
+echo "fast-lean: $devToolchain, $mode${LEAN_DEV_CHECK:+, checking $LEAN_DEV_CHECK}" >&2
+exec "$lake" -d "$root" "$cmd" "${args[@]}"

@@ -20,6 +20,12 @@ test_eq '"foo"' query foo --json
 test_eq "B" query +A:imports
 test_eq '["C","B"]' query +A:transImports --json
 
+# Test querying a module's dependency hash, i.e., the hash of official toolchains,
+# which this development toolchain marks in the traces of modules it builds (see `devMarker`)
+test_run build +A
+no_match_text $($LAKE query +A:depHash) .lake/build/lib/lean/A.trace
+test_eq "\"$($LAKE query +A:depHash)\"" query +A:depHash --json
+
 # Test querying deps
 $LAKE query :deps | diff -u --strip-trailing-cr <(cat << 'EOF'
 dep
@@ -52,5 +58,5 @@ test `$LAKE query a b | wc -l` = 2
 
 set +x
 
-# Cleanup
-rm -f produced.out
+# Cleanup (the outputs of `A` and `a` differ only in case, which `lint.py` rejects)
+./clean.sh

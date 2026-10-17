@@ -911,17 +911,26 @@ private def getDevConfig : JobM Env.DevConfig := do
 -- closed terms of code before existing declarations would be shared with them
 set_option compiler.extract_closed false in
 /--
-Applies the development options of `LEAN_DEV` to a module Lake has to (re)build, unless it has
-outputs built without them.
+Every module this development toolchain builds gets a trace marked by `devToolchainTrace`, with the
+development options of `LEAN_DEV`. The `depHash` facet still reports the unmarked hash, which
+official toolchains use.
 -/
-private def Module.withDevOptions (mod : Module) (setup : ModuleSetup) : JobM ModuleSetup := do
+private def Module.withDevMarker (mod : Module) (setup : ModuleSetup) : JobM ModuleSetup := do
+  let savedTrace ← readTraceFile mod.traceFile
+  let hasOutputs : JobM Bool := do
+    let .ok data := savedTrace | return false
+    if data.depHash != (← getTrace).hash then return false
+    mod.checkExists setup.isModule
+  -- existing official outputs (e.g., downloaded caches) are at least as good
+  if (← hasOutputs) then
+    return setup
+  addTrace devToolchainTrace
   let dev ← getDevConfig
   if dev.options.values.isEmpty || dev.checkModules.any (·.isPrefixOf mod.name) then
     return setup
-  -- outputs built without dev options (e.g., downloaded caches) are at least as good
-  if let .ok data ← readTraceFile mod.traceFile then
-    if data.depHash == (← getTrace).hash then
-      return setup
+  -- so are existing outputs built by this toolchain without dev options
+  if (← hasOutputs) then
+    return setup
   addTrace <| traceOptions dev.options "dev options"
   return {setup with options := setup.options ++ dev.options}
 
@@ -950,7 +959,7 @@ def Module.recBuildLean (mod : Module) : FetchM (Job ModuleOutputArtifacts) := d
     addPureTrace mod.pkg.id? "Package.id?"
     addPureTrace mod.leanArgs "Module.leanArgs"
     setTraceCaption s!"{mod.name.toString}:leanArts"
-    let setup ← mod.withDevOptions setup
+    let setup ← mod.withDevMarker setup
     let arts ← fetchCore setup srcFile srcTrace
     let arts ← trackOutputsIfEnabled arts
     let arts ← adjustMTime arts
@@ -1233,6 +1242,23 @@ def Module.recBuildDynlib (mod : Module) : FetchM (Job Dynlib) :=
 public def Module.dynlibFacetConfig : ModuleFacetConfig dynlibFacet :=
   mkFacetJobConfig recBuildDynlib
 
+/-- The `ModuleFacetConfig` for the builtin `depHashFacet`. -/
+public def Module.depHashFacetConfig : ModuleFacetConfig depHashFacet :=
+  mkFacetJobConfig (buildable := false) fun mod => do
+    let setupJob ← mod.setup.fetch
+    let leanJob ← mod.lean.fetch
+    setupJob.mapM fun setup => do
+      -- the trace of `recBuildLean` before `withDevMarker`
+      addLeanTrace
+      discard <| leanJob.await
+      addTrace leanJob.getTrace
+      addTrace <| traceOptions setup.options "options"
+      addPureTrace setup.isModule "isModule"
+      addPureTrace mod.name "Module.name"
+      addPureTrace mod.pkg.id? "Package.id?"
+      addPureTrace mod.leanArgs "Module.leanArgs"
+      return (← getTrace).hash
+
 /--
 A name-configuration map for the initial set of
 Lake module facets (e.g., `imports`, `c`, `o`, `dynlib`).
@@ -1268,6 +1294,7 @@ public def Module.initFacetConfigs : DNameMap ModuleFacetConfig :=
   |>.insert oExportFacet oExportFacetConfig
   |>.insert oNoExportFacet oNoExportFacetConfig
   |>.insert dynlibFacet dynlibFacetConfig
+  |>.insert depHashFacet depHashFacetConfig
 
 @[inherit_doc Module.initFacetConfigs]
 public abbrev initModuleFacetConfigs := Module.initFacetConfigs

@@ -273,3 +273,9 @@ The default facet for an input directory.
 Produces the matching files in the directory.
 -/
 builtin_facet default : InputDir => Array FilePath
+
+/--
+The complete hash of a module's build dependencies (e.g., imports, source, plugins), as computed by
+official toolchains, i.e., without the marker of this development toolchain.
+-/
+builtin_facet depHash : Module => Hash

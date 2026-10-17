@@ -164,6 +164,8 @@ set_option compiler.extract_closed false in
 Parses `LEAN_DEV`, a comma-separated list of development shortcuts:
 * `checks`: skip kernel type checking and linters.
 * `proofs`: do not elaborate proofs (see the `dev.skipProofs` Lean option).
+* `sat`: accepted for compatibility with the default of `fast-lean`; this toolchain does not trust
+  the SAT solver, so `bv_decide` still checks its certificates.
 -/
 public def devOptionsOf (spec : String) : EIO String LeanOptions := do
   let mut opts : Array LeanOption := #[]
@@ -174,7 +176,8 @@ public def devOptionsOf (spec : String) : EIO String LeanOptions := do
       opts := opts.push ⟨`debug.skipKernelTC, .ofBool true⟩ |>.push ⟨`dev.skipLinters, .ofBool true⟩
     | "proofs" =>
       opts := opts.push ⟨`dev.skipProofs, .ofBool true⟩ |>.push ⟨`dev.skipLinters, .ofBool true⟩
-    | s => throw s!"'LEAN_DEV' contains unknown shortcut '{s}'; expected 'checks' or 'proofs'"
+    | "sat" => pure ()
+    | s => throw s!"'LEAN_DEV' contains unknown shortcut '{s}'; expected 'checks', 'proofs', or 'sat'"
   return LeanOptions.ofArray opts
 
 /--
