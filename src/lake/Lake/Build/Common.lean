@@ -41,6 +41,14 @@ and will be rebuilt on different host platforms.
 @[inline] public def addPlatformTrace : JobM PUnit :=
   addTrace platformTrace
 
+-- closed terms of code before existing declarations would be shared with them
+set_option compiler.extract_closed false in
+/--
+Marks the outputs built by this development toolchain, which identifies as the upstream release,
+so that official toolchains do not reuse them.
+-/
+public def devToolchainTrace : BuildTrace := .ofHash (pureHash "dev toolchain") "dev toolchain"
+
 /-- Mixes Lean's trace into the current job's trace. -/
 @[inline] public def addLeanTrace : JobM PUnit := do
   addTrace (← getLeanTrace)
@@ -172,6 +180,20 @@ public def readTraceFile (path : FilePath) : LogIO SavedTrace := do
     return .missing
   | .error e =>
     error s!"{path}: read failed: {e}"
+
+-- closed terms of code before existing declarations would be shared with them
+set_option compiler.extract_closed false in
+/--
+Marks the current job's trace with `devToolchainTrace`, unless `file` exists with the unmarked
+trace (i.e., was built by an official toolchain), in which case it is reused.
+-/
+public def markDevTrace (file : FilePath) : JobM PUnit := do
+  let depTrace ← getTrace
+  if let .ok data ← readTraceFile (FilePath.mk <| file.toString ++ ".trace") then
+    if data.depHash == depTrace.hash then
+      if (← file.pathExists) then
+        return
+  setTrace <| depTrace.mix devToolchainTrace
 
 /-- Write a trace file containing the metadata. -/
 public def BuildMetadata.writeFile (path : FilePath) (data : BuildMetadata) : IO Unit := do
@@ -863,6 +885,7 @@ public def buildLeanO
     addLeanTrace
     addPureTrace traceArgs "traceArgs"
     addPlatformTrace -- object files are platform-dependent artifacts
+    markDevTrace oFile
     let art ← buildArtifactUnlessUpToDate oFile (ext := "o") do
       let lean ← getLeanInstall
       let includeDir := leanIncludeDir?.getD lean.includeDir
@@ -1021,6 +1044,7 @@ public def buildLeanSharedLibSync
 : JobM Dynlib := do
   addLeanTrace
   addPlatformTrace -- shared libraries are platform-dependent artifacts
+  markDevTrace libFile
   -- Lean plugins are required to have a specific name
   -- and thus need to restored from the cache with that name
   let art ← buildArtifactUnlessUpToDate libFile (ext := sharedLibExt) (restore := true) do
@@ -1080,6 +1104,7 @@ public def buildLeanExeSync
     macosxDeploymentTarget? <|> (← getMacOSXDeploymentTarget?)
   if let some ver := macosxDeploymentTarget? then
     addPureTrace ver "MACOSX_DEPLOYMENT_TARGET"
+  markDevTrace exeFile
   let art ← buildArtifactUnlessUpToDate exeFile (ext := FilePath.exeExtension) (exe := true) (restore := true) do
     let args ← mkLeanLinkArgs linkObjs linkLibs args (linkDeps := true) sharedLean
     compileExe exeFile args (← getLeanCc) macosxDeploymentTarget?
