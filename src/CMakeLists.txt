@@ -41,6 +41,10 @@ if(NOT LEAN_PLATFORM_TARGET)
   )
 endif()
 
+# Like `GIT_SHA1` below, identify as the upstream release, whose compiler reports the `unknown`
+# vendor, so that Lake traces of platform-dependent artifacts match those of the release.
+string(REPLACE "-pc-linux-gnu" "-unknown-linux-gnu" LEAN_PLATFORM_TARGET "${LEAN_PLATFORM_TARGET}")
+
 set(LEAN_EXTRA_LINKER_FLAGS_DEFAULT "")
 # Use lld by default, if available
 find_program(LLD_PATH lld)
@@ -609,9 +613,9 @@ endif()
 
 # Git HASH
 if(USE_GITHASH)
-  # This development branch identifies as the upstream release it is based on, making its build
-  # outputs interchangeable with those of the release (Lake traces, `.olean` headers checked by
-  # release builds). Must be updated when rebasing onto another release.
+  # This development branch identifies as the upstream release it is based on, so that it reads the
+  # release's `.olean` files and its Lake reuses the release's build outputs (Lake marks the outputs
+  # it builds itself, see `devToolchainTrace`). Must be updated when rebasing onto another release.
   set(GIT_SHA1 "68218e876d2a38b1985b8590fff244a83c321783")
   message(STATUS "git commit sha1 (upstream release): ${GIT_SHA1}")
 else()
