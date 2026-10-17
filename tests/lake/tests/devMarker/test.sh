@@ -63,7 +63,7 @@ unset LAKE_CACHE_DIR LAKE_ARTIFACT_CACHE
 
 # Native artifacts are marked as well
 test_run build foo
-test_cmd grep -F '"dev toolchain"' .lake/build/bin/foo.trace
+test_cmd grep -F '"dev toolchain"' "$(find .lake/build/bin -name 'foo*.trace')"
 
 # Configurations elaborated by this toolchain are marked, while official ones are reused
 CONFIG_TRACE=$(find .lake -name lakefile.olean.trace)
