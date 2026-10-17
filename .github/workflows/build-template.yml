@@ -153,10 +153,9 @@ jobs:
           # affect CI
           OPTIONS=(-DWFAIL=ON -DLEAN_HEADER_SNAPSHOTS=ON)
           if [[ -n '${{ matrix.release }}' ]]; then
-            # Embeds the githash into stage 1 library and checks it.
-            # This prohibits reusing `.olean`s from any build not so stamped,
-            # so we don't do it in the fast non-release CI.
-            OPTIONS+=(-DCHECK_OLEAN_VERSION=ON)
+            # No `CHECK_OLEAN_VERSION`: this branch's binary reports the upstream release githash
+            # (see `src/CMakeLists.txt`), while stage 0 would stamp the stage 1 library with this
+            # commit's, which the check would then reject.
             # Replace the system-wide cache with a job-level one to avoid ingesting mismatched
             # oleans from other builds on self-hosted runners.
             echo "LAKE_CACHE_DIR=" >> "$GITHUB_ENV"
