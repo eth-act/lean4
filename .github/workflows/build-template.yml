@@ -55,7 +55,7 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@main
         if: runner.os == 'Linux' && !matrix.cmultilib
       - name: Install MSYS2
-        uses: msys2/setup-msys2@v2
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2.32.0
         with:
           msystem: clang64
           # `:` means do not prefix with msystem
