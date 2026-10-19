@@ -227,6 +227,17 @@ jobs:
           make -C build/$TARGET_STAGE install
       - name: Check Binaries
         run: ${{ matrix.binary-check }} lean-*/bin/* || true
+      - name: Check Compatibility with Upstream Release
+        # `.olean` files and native code built by the upstream release this branch identifies as
+        # must work with this toolchain, see `script/check-compiler-abi.sh`
+        if: matrix.release && runner.os == 'Linux' && !matrix.cross
+        run: |
+          dir=$(echo lean-*-*)
+          ver=${dir#lean-}
+          ver=${ver%-*}
+          mkdir -p "$RUNNER_TEMP/upstream"
+          curl -fsSL "https://github.com/leanprover/lean4/releases/download/v$ver/$dir.tar.zst" | zstd -d | tar -x -C "$RUNNER_TEMP/upstream"
+          script/check-compiler-abi.sh "$RUNNER_TEMP/upstream/$dir" "$dir"
       - name: Count binary symbols
         run: |
           for f in lean-*/bin/*; do
