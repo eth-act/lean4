@@ -1,0 +1,34 @@
+# Declarations whose compiled code the patches of this branch change on purpose, see
+# `script/CompilerABI.lean`. Their signatures must stay the same. New code comes after the
+# declarations it extends, which only call into it, so that this list stays short.
+
+# development mode (`dev.skipProofs`, `dev.skipLinters`, root cache in `findOLean`)
+Lean.findOLean  # `findWithCachedRoot?`
+Lean.Elab.Command.runLintersAsync  # `dev.skipLinters`
+Lean.Elab.Term.runTactic  # `runTacticSkippingProof`
+aux _private.Lean.Elab.MutualDef.0.Lean.Elab.Term.elabMutualDef.go._lam_0  # calls `elabHeadersSkippingProofs` instead of `elabHeaders`
+aux _private.Lean.Elab.MutualDef.0.Lean.Elab.Term.elabMutualDef.finishElab._lam_2  # calls `elabFunValuesSkippingProofs` instead of `elabFunValues`
+Lake.Env.compute  # validates `LEAN_DEV`
+aux _private.Lake.Build.Module.0.Lake.Module.recBuildLean._lam_0  # `Module.withDevMarker`
+
+# `dev.trustSat`
+Lean.Meta.Tactic.BVDecide.External.satQuery  # `dropLratArgs`
+Lean.Meta.Tactic.BVDecide.runExternal  # `runExternalTrusted?`
+_private.Lean.Meta.Tactic.BVDecide.Prover.Bitblast.0.Lean.Meta.Tactic.BVDecide.LratCert.toReflectionProof  # no certificate check
+aux Lean.Elab.Tactic.BVDecide.evalBvTraceTactic._lam_0  # calls `evalBvTraceCertified` instead of `evalBvTrace`
+aux Lake.setupServerModule._lam_0  # calls `setupEditedModuleDev`/`setupExternalModuleDev` instead of `setupEditedModule`/`setupExternalModule`
+aux Lake.prepareLeanCommand._lam_2  # calls `setupExternalModuleDev` instead of `setupExternalModule`
+
+# equation generation for `match`es with many alternatives
+Lean.Meta.reduceMatcher?  # `reduceMatcherFast?`
+_private.Lean.Elab.PreDefinition.Eqns.0.Lean.Elab.Eqns.splitMatch?.go  # `splitMatchAbstractingAlts`, `Split.splitMatchLazy`
+
+# outputs marked by the development toolchain
+aux Lake.buildLeanO._lam_1  # `markDevTrace`
+Lake.buildLeanSharedLibSync  # `markDevTrace`
+Lake.buildLeanExeSync  # `markDevTrace`
+aux Lake.buildLeanSharedLibOfStatic._lam_1  # `markDevTrace`
+Lake.importConfigFile  # configuration trace marked with `+dev`
+
+# skipping inapplicable `match` equations in `simp`
+Lean.Meta.Simp.simpMatch  # `matchEqnsCannotApply`
