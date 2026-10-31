@@ -31,6 +31,11 @@ Environment:
                     proofs   do not elaborate proofs (they use the axiom `skippedProof`)
                     sat      trust the SAT solver in `bv_decide` (also in `fast-lean lean`)
   LEAN_DEV_CHECK  More comma-separated module name prefixes to check fully.
+  LEAN_DEV_NATIVE Set it to `1` (Linux only) to compile the dependencies' modules that the project
+                  imports to native code, so that their tactics and other metaprograms do not run
+                  in the interpreter. Outputs are unchanged. Tradeoff: the first build compiles
+                  them (minutes for Mathlib) for a saving of about 5-10% of CPU time in later
+                  builds. The libraries are cached in `${XDG_CACHE_HOME:-~/.cache}/fast-lean/native`.
   FAST_LEAN_VERSIONS
                   Version map: a URL or file with lines `<Lean version> <elan toolchain>`, e.g.
                   `v4.34.0 eth-act/lean4:dev-fast-v4.34.0-1`. Default: the map published with
@@ -49,6 +54,9 @@ Mathlib cache) as they are.
 SAT cache: under `sat`, `bv_decide` problems found UNSAT are remembered and not solved again.
 Clear the cache with
   rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/lean/trusted-unsat"
+
+Native code cache: clear it with
+  rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/fast-lean/native"
 EOF
 }
 

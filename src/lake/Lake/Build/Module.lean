@@ -14,6 +14,7 @@ import Lake.Util.Proc
 import Lake.Build.Job.Register
 import Lake.Build.Common
 import Lake.Build.Target
+import Lake.Build.DevNative
 import Init.Omega
 
 /-! # Module Build Definitions -/
@@ -585,9 +586,15 @@ def Module.recFetchSetup (mod : Module) : FetchM (Job ModuleSetup) := ensureJob 
       options := mod.leanOptions ++ extra
     }
 
+-- closed terms of code before existing declarations would be shared with them
+set_option compiler.extract_closed false in
+/-- `recFetchSetup` with the native libraries of dependencies in development mode. -/
+private def Module.recFetchSetupDev (mod : Module) : FetchM (Job ModuleSetup) := do
+  mod.withDevNativeLibs (← mod.recFetchSetup)
+
 /-- The `ModuleFacetConfig` for the builtin `setupFacet`. -/
 public def Module.setupFacetConfig : ModuleFacetConfig setupFacet :=
-  mkFacetJobConfig recFetchSetup
+  mkFacetJobConfig recFetchSetupDev
 
 /-- The `ModuleFacetConfig` for the builtin `depsFacet`. -/
 public def Module.depsFacetConfig : ModuleFacetConfig depsFacet :=
