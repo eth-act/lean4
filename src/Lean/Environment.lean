@@ -1912,6 +1912,29 @@ private def setImportedEntries (states : Array EnvExtensionState) (mods : Array 
           { s with importedEntries := s.importedEntries.set! modIdx entries }
   return states
 
+/--
+Like `setImportedEntries` for all extensions, but the extensions share one `importedEntries` array
+until they set an entry. This saves allocating (and later marking) an array per extension without
+entries in `mods`.
+-/
+private def setImportedEntriesShared (states : Array EnvExtensionState) (mods : Array ModuleData) :
+    IO (Array EnvExtensionState) := do
+  let mut states := states
+  let extDescrs ← persistentEnvExtensionsRef.get
+  let noEntries : Array (Array EnvExtensionEntry) := .replicate mods.size #[]
+  for extDescr in extDescrs do
+    -- safety: as in `modifyState`
+    states := unsafe extDescr.toEnvExtension.modifyStateImpl states fun s =>
+      { s with importedEntries := noEntries }
+  let extNameIdx ← mkExtNameMap 0
+  for h : modIdx in *...mods.size do
+    for (extName, entries) in mods[modIdx].entries do
+      if let some entryIdx := extNameIdx[extName]? then
+        -- safety: as in `modifyState`
+        states := unsafe extDescrs[entryIdx]!.toEnvExtension.modifyStateImpl states fun s =>
+          { s with importedEntries := s.importedEntries.set! modIdx entries }
+  return states
+
 set_option compiler.ignoreBorrowAnnotation true in
 /--
   "Forward declaration" needed for updating the attribute table with user-defined attributes.
@@ -2234,6 +2257,13 @@ where
       p := body
     p.isProp
 
+private unsafe def isSameModuleDataUnsafe (as bs : Array ModuleData) : Bool :=
+  as.size == bs.size && as.size.all fun i _ => ptrEq as[i]! bs[i]!
+
+/-- Whether `as` and `bs` consist of the same objects (a sufficient criterion for equality). -/
+@[implemented_by isSameModuleDataUnsafe]
+private opaque isSameModuleData (as bs : Array ModuleData) : Bool
+
 /--
 Constructs environment from `importModulesCore` results.
 
@@ -2306,18 +2336,22 @@ def finalizeImport (s : ImportState) (imports : Array Import) (opts : Options) (
   }
   let publicConstants : ConstMap := SMap.fromHashMap publicConstantMap false
   let publicBase := { privateBase with constants := publicConstants, header.regions := #[] }
-  let extensions ← setImportedEntries privateBase.extensions moduleData
+  let extensions ← setImportedEntriesShared privateBase.extensions moduleData
   -- fall back to basic data when not in server
   let serverData := modules.mapIdx (fun idx mod => mod.serverData? level |>.getD moduleData[idx]!)
+  -- outside the server and for non-`module`s, the data usually is the same as `moduleData`
+  let setImportedEntriesFor (data : Array ModuleData) :=
+    if isSameModuleData data moduleData then pure extensions
+    else setImportedEntriesShared privateBase.extensions data
   let privateBase := { privateBase with
     extensions
-    irBaseExts := (← setImportedEntries privateBase.extensions irData)
+    irBaseExts := (← setImportedEntriesFor irData)
   }
   let mut env : Environment := {
     base.private := privateBase
     base.public  := publicBase
     importRealizationCtx? := none
-    serverBaseExts := (← setImportedEntries privateBase.extensions serverData)
+    serverBaseExts := (← setImportedEntriesFor serverData)
   }
   if leakEnv then
     /- Mark persistent a first time before `finalizePersistentExtensions`, which
