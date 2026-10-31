@@ -31,6 +31,11 @@ Environment:
                     proofs   do not elaborate proofs (they use the axiom `skippedProof`)
                     sat      trust the SAT solver in `bv_decide` (also in `fast-lean lean`)
   LEAN_DEV_CHECK  More comma-separated module name prefixes to check fully.
+  LEAN_DEV_NATIVE Default `1` (Linux only): compile the dependencies' modules that the project
+                  imports to native code, so that their tactics and other metaprograms do not run
+                  in the interpreter. Outputs are unchanged. The libraries are built once and
+                  cached in `${XDG_CACHE_HOME:-~/.cache}/fast-lean/native`. Set it to `0` to use
+                  the interpreter.
   FAST_LEAN_VERSIONS
                   Version map: a URL or file with lines `<Lean version> <elan toolchain>`, e.g.
                   `v4.34.0 eth-act/lean4:dev-fast-v4.34.0-1`. Default: the map published with
@@ -49,6 +54,9 @@ Mathlib cache) as they are.
 SAT cache: under `sat`, `bv_decide` problems found UNSAT are remembered and not solved again.
 Clear the cache with
   rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/lean/trusted-unsat"
+
+Native code cache: clear it with
+  rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/fast-lean/native"
 EOF
 }
 
@@ -135,6 +143,7 @@ export ELAN_TOOLCHAIN=$devToolchain
 unset LAKE LAKE_HOME LAKE_OVERRIDE_LEAN LEAN LEAN_SYSROOT LEAN_AR LEAN_GITHASH
 if [[ ${LAKE_CACHE_DIR-} == "$elanHome/toolchains/"* ]]; then unset LAKE_CACHE_DIR; fi
 export LEAN_DEV=${LEAN_DEV-proofs,sat}
+export LEAN_DEV_NATIVE=${LEAN_DEV_NATIVE-1}
 lake=$devDir/bin/lake
 
 # Absolute path of `$1`, resolving symlinks where it exists (macOS `realpath` lacks `-m`).
