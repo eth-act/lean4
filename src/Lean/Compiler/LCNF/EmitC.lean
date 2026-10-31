@@ -1004,6 +1004,21 @@ def emitDeclInit (decl : Decl .impure) (isBuiltin : Bool) : EmitM Unit := do
       emitCName decl.name; emit " = "; emitCInitName decl.name; emitLn "();"
       emitMarkPersistent decl
 
+/--
+Initializes a constant that is not marked `meta` but is used by `meta` code (e.g., a `_boxed_const`
+auxiliary declaration) in the `meta` phase as well. Its value may depend on `meta` constants, which
+are only initialized in this phase, so it is recomputed even if the runtime phase has run.
+-/
+def emitMetaAuxDeclInit (phases : IRPhases) (decl : Decl .impure) : EmitM Unit := do
+  let env ← getEnv
+  -- `[init]` declarations run IO actions, which must not be repeated
+  if phases == .comptime && isDeclMeta env decl.name && decl.params.isEmpty &&
+      !isIOUnitInitFn env decl.name && !isIOUnitBuiltinInitFn env decl.name &&
+      (getInitFnNameFor? env decl.name).isNone && (getBuiltinInitFnNameFor? env decl.name).isNone &&
+      !(isClosedTermName env decl.name || isSimpleGroundDecl env decl.name) then
+    emitCName decl.name; emit " = "; emitCInitName decl.name; emitLn "();"
+    emitMarkPersistent decl
+
 def emitInitFn (phases : IRPhases) : EmitM Unit := do
   let env ← getEnv
   let impInitFns ← env.imports.filterMapM fun imp => do
@@ -1030,6 +1045,8 @@ def emitInitFn (phases : IRPhases) : EmitM Unit := do
   for decl in (← getLocalDecls) do
     if phases == .all || (phases == .comptime) == isMarkedMeta env decl.name then
       emitDeclInit decl (isBuiltin := phases != .comptime)
+    else
+      emitMetaAuxDeclInit phases decl
   emitLn "return lean_io_result_mk_ok(lean_box(0));"
   emitLn "}"
 
