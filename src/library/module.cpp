@@ -608,6 +608,7 @@ extern "C" LEAN_EXPORT object * lean_compacted_region_read(b_obj_arg ofname, b_o
             std::move(dep_regions),
             std::move(lib_relocs), std::move(closure_offsets));
         object * mod = reader.read();
+        register_compacted_region(buffer, size);
         object * pair = alloc_cnstr(0, 2, 0);
         cnstr_set(pair, 0, mod);
         // The Lean region is framed by its whole mapping (`buffer`, `base_addr` = the mapped-at
@@ -630,6 +631,7 @@ extern "C" LEAN_EXPORT obj_res lean_compacted_region_free(obj_arg region, object
     // refcount-free buffer object, so it needs no decrement.
     lean_ctor_set(region, 1, lean_box(0));
     lean_dec_ref(region);
+    unregister_compacted_region(buffer, full_sz);
     if (is_mmap) {
 #if defined(__has_feature)
 #if __has_feature(address_sanitizer)

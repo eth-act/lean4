@@ -64,6 +64,11 @@ inline bool is_ref(object * o) { return lean_is_ref(o); }
 
 inline void mark_persistent(object * o) { return lean_mark_persistent(o); }
 
+/* Register/unregister the memory `[begin, begin + size)` of a compacted region (all of whose objects
+   are persistent) so that `lean_mark_persistent` can skip pointers into it without touching them. */
+LEAN_EXPORT void register_compacted_region(void * begin, size_t size);
+LEAN_EXPORT void unregister_compacted_region(void * begin, size_t size);
+
 inline unsigned obj_tag(b_obj_arg o) { return lean_obj_tag(o); }
 
 // =======================================

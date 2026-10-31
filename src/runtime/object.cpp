@@ -580,13 +580,107 @@ static obj_res mark_persistent_fn(obj_arg o) {
 #endif
 #endif
 
-extern "C" LEAN_EXPORT void lean_mark_persistent(object * o) {
+namespace {
+/* Set of the 64KiB granules lying entirely inside some registered compacted region. Pointers into
+   them are to persistent objects, so marking can skip them without loading their (possibly not yet
+   paged-in) headers. Open addressing over `granule + 1`, 0 = empty; rebuilt on removal. */
+class compacted_granules {
+    static constexpr unsigned GRANULE_BITS = 16;
+    std::vector<std::pair<size_t, size_t>> m_regions;
+    std::vector<size_t> m_table;
+    size_t m_count = 0;
+
+    static size_t slot(size_t key, size_t mask) { return (key * 0x9E3779B97F4A7C15ull >> 20) & mask; }
+
+    void insert_key(size_t key) {
+        size_t mask = m_table.size() - 1;
+        for (size_t i = slot(key, mask);; i = (i + 1) & mask) {
+            if (m_table[i] == key) return;
+            if (m_table[i] == 0) { m_table[i] = key; m_count++; return; }
+        }
+    }
+
+    template<typename F> static void for_each_key(std::pair<size_t, size_t> const & r, F && f) {
+        size_t first = (r.first + (size_t(1) << GRANULE_BITS) - 1) >> GRANULE_BITS;
+        size_t last  = r.second >> GRANULE_BITS;
+        for (size_t g = first; g < last; g++) f(g + 1);
+    }
+
+    void rebuild(size_t min_keys) {
+        size_t cap = 1024;
+        while (cap < 2 * min_keys) cap *= 2;
+        m_table.assign(cap, 0);
+        m_count = 0;
+        for (auto const & r : m_regions) for_each_key(r, [&](size_t k) { insert_key(k); });
+    }
+
+public:
+    shared_mutex m_mutex;
+
+    bool empty() const { return m_count == 0; }
+
+    void add(size_t begin, size_t end) {
+        m_regions.push_back({begin, end});
+        size_t n = 0;
+        for_each_key(m_regions.back(), [&](size_t) { n++; });
+        if (2 * (m_count + n) > m_table.size()) {
+            rebuild(m_count + n);
+        } else {
+            for_each_key(m_regions.back(), [&](size_t k) { insert_key(k); });
+        }
+    }
+
+    void remove(size_t begin, size_t end) {
+        auto it = std::find(m_regions.begin(), m_regions.end(), std::make_pair(begin, end));
+        if (it == m_regions.end()) return;
+        m_regions.erase(it);
+        rebuild(m_count);
+    }
+
+    bool contains(object * o) const {
+        size_t key = (reinterpret_cast<size_t>(o) >> GRANULE_BITS) + 1;
+        size_t mask = m_table.size() - 1;
+        for (size_t i = slot(key, mask);; i = (i + 1) & mask) {
+            size_t k = m_table[i];
+            if (k == key) return true;
+            if (k == 0) return false;
+        }
+    }
+};
+
+compacted_granules & get_compacted_granules() {
+    static compacted_granules * g = new compacted_granules();
+    return *g;
+}
+}
+
+void register_compacted_region(void * begin, size_t size) {
+    compacted_granules & g = get_compacted_granules();
+    unique_lock<shared_mutex> lock(g.m_mutex);
+    g.add(reinterpret_cast<size_t>(begin), reinterpret_cast<size_t>(begin) + size);
+}
+
+void unregister_compacted_region(void * begin, size_t size) {
+    compacted_granules & g = get_compacted_granules();
+    unique_lock<shared_mutex> lock(g.m_mutex);
+    g.remove(reinterpret_cast<size_t>(begin), reinterpret_cast<size_t>(begin) + size);
+}
+
+template<bool skip_regions>
+static void mark_persistent_core(object * o, compacted_granules const & regions) {
     buffer<object*> todo;
-    todo.push_back(o);
+    auto push = [&](object * c) {
+        if (lean_is_scalar(c) || (skip_regions && regions.contains(c))) return;
+        todo.push_back(c);
+    };
+    push(o);
     while (!todo.empty()) {
         object * o = todo.back();
         todo.pop_back();
-        if (!lean_is_scalar(o) && lean_has_rc(o)) {
+        // Objects are mostly popped in stack order, e.g. the buckets of a large hash map; fetch
+        // the header of one a few iterations ahead to overlap the cache misses.
+        if (todo.size() >= 8) __builtin_prefetch(todo[todo.size() - 8], 1);
+        if (lean_has_rc(o)) {
             lean_internal_set_rc(o, 0);
 #if defined(__has_feature)
 #if __has_feature(address_sanitizer)
@@ -602,7 +696,7 @@ extern "C" LEAN_EXPORT void lean_mark_persistent(object * o) {
             if (tag <= LeanMaxCtorTag) {
                 object ** it  = lean_ctor_obj_cptr(o);
                 object ** end = it + lean_ctor_num_objs(o);
-                for (; it != end; ++it) todo.push_back(*it);
+                for (; it != end; ++it) push(*it);
             } else {
                 switch (tag) {
                 case LeanScalarArray:
@@ -616,29 +710,29 @@ extern "C" LEAN_EXPORT void lean_mark_persistent(object * o) {
                     break;
                 }
                 case LeanTask:
-                    todo.push_back(lean_task_get(o));
+                    push(lean_task_get(o));
                     break;
                 case LeanPromise:
-                    todo.push_back((lean_object *)lean_to_promise(o)->m_result);
+                    push((lean_object *)lean_to_promise(o)->m_result);
                     break;
                 case LeanClosure: {
                     object ** it  = lean_closure_arg_cptr(o);
                     object ** end = it + lean_closure_num_fixed(o);
-                    for (; it != end; ++it) todo.push_back(*it);
+                    for (; it != end; ++it) push(*it);
                     break;
                 }
                 case LeanArray: {
                     object ** it  = lean_array_cptr(o);
                     object ** end = it + lean_array_size(o);
-                    for (; it != end; ++it) todo.push_back(*it);
+                    for (; it != end; ++it) push(*it);
                     break;
                 }
                 case LeanThunk:
-                    if (object * c = lean_to_thunk(o)->m_closure) todo.push_back(c);
-                    if (object * v = lean_to_thunk(o)->m_value) todo.push_back(v);
+                    if (object * c = lean_to_thunk(o)->m_closure) push(c);
+                    if (object * v = lean_to_thunk(o)->m_value) push(v);
                     break;
                 case LeanRef:
-                    if (object * v = lean_to_ref(o)->m_value) todo.push_back(v);
+                    if (object * v = lean_to_ref(o)->m_value) push(v);
                     break;
                 default:
                     lean_unreachable();
@@ -647,6 +741,24 @@ extern "C" LEAN_EXPORT void lean_mark_persistent(object * o) {
             }
         }
     }
+}
+
+// set while the current thread holds the shared lock in `lean_mark_persistent`, which recurses via
+// `mark_persistent_fn` for external objects
+LEAN_THREAD_VALUE(bool, g_marking_persistent, false);
+
+extern "C" LEAN_EXPORT void lean_mark_persistent(object * o) {
+    compacted_granules & regions = get_compacted_granules();
+    if (g_marking_persistent) {
+        if (regions.empty()) mark_persistent_core<false>(o, regions); else mark_persistent_core<true>(o, regions);
+        return;
+    }
+    regions.m_mutex.lock_shared();
+    {
+        flet<bool> set(g_marking_persistent, true);
+        if (regions.empty()) mark_persistent_core<false>(o, regions); else mark_persistent_core<true>(o, regions);
+    }
+    regions.m_mutex.unlock_shared();
 }
 
 // =======================================
