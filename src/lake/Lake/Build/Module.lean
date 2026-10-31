@@ -14,6 +14,7 @@ import Lake.Util.Proc
 import Lake.Build.Job.Register
 import Lake.Build.Common
 import Lake.Build.Target
+import Lake.Build.DevNative
 import Init.Omega
 
 /-! # Module Build Definitions -/
@@ -614,9 +615,15 @@ where
       let opt := s!"-D{n}={v.asCliFlagValue}"
       t.mix <| .ofHash (pureHash opt) opt
 
+-- closed terms of code before existing declarations would be shared with them
+set_option compiler.extract_closed false in
+/-- `recFetchPreSetup` with the native libraries of dependencies in development mode. -/
+private def Module.recFetchPreSetupDev (mod : Module) : FetchM (Job ModulePreSetup) := do
+  mod.withDevNativeLibs (← mod.recFetchPreSetup)
+
 /-- The `ModuleFacetConfig` for the builtin `presetupFacet`. -/
 public def Module.presetupFacetConfig : ModuleFacetConfig presetupFacet :=
-  mkFacetJobConfig (buildable := false) recFetchPreSetup
+  mkFacetJobConfig (buildable := false) recFetchPreSetupDev
 
 /-- The `ModuleFacetConfig` for the builtin `depTraceFacet`. -/
 public def Module.depTraceFacetConfig : ModuleFacetConfig depTraceFacet :=

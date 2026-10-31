@@ -19,6 +19,7 @@ if [ "$3 $4 $5" = "env printenv LEAN_SRC_PATH" ]; then echo "$FAKE_SRC_PATH"; ex
 echo "args: $*"
 echo "LEAN_DEV=${LEAN_DEV-<unset>}"
 echo "LEAN_DEV_CHECK=${LEAN_DEV_CHECK-}"
+echo "LEAN_DEV_NATIVE=${LEAN_DEV_NATIVE-<unset>}"
 echo "ELAN_TOOLCHAIN=$ELAN_TOOLCHAIN"
 echo "LAKE=${LAKE-<unset>}"
 echo "lean: $(dirname "$(command -v lake)")"
@@ -27,7 +28,7 @@ chmod +x elan/toolchains/dev-fast-v4.0.0/bin/lake
 touch proj/lakefile.toml
 echo "leanprover/lean4:v4.0.0" > proj/lean-toolchain
 export FAKE_SRC_PATH="/nonexistent:$ROOT/src"
-unset LEAN_DEV LEAN_DEV_CHECK
+unset LEAN_DEV LEAN_DEV_CHECK LEAN_DEV_NATIVE
 
 OUT=$PWD/produced.out
 fast_out() {
@@ -81,6 +82,7 @@ echo "leanprover/lean4:v4.0.0" > proj/lean-toolchain
 match_text "args: -d $ROOT build" produced.out
 match_text "LEAN_DEV=proofs,sat" produced.out
 match_pat "^LEAN_DEV_CHECK=$" produced.out
+match_text "LEAN_DEV_NATIVE=<unset>" produced.out
 match_text "ELAN_TOOLCHAIN=dev-fast-v4.0.0" produced.out
 match_text "LAKE=<unset>" produced.out
 match_text "lean: $ELAN_HOME/toolchains/dev-fast-v4.0.0/bin" produced.out
@@ -95,6 +97,10 @@ match_text "LEAN_DEV_CHECK=Extra,Foo.Bar,Baz,Qux.Quux" produced.out
 (cd proj && LEAN_DEV= fast_out build)
 match_pat "^LEAN_DEV=$" produced.out
 match_text "fast-lean: dev-fast-v4.0.0, faithful" produced.out
+
+# Native code of dependencies is opt-in
+(cd proj && LEAN_DEV_NATIVE=1 fast_out build)
+match_text "LEAN_DEV_NATIVE=1" produced.out
 
 # Other commands are passed through
 (cd proj/Foo && fast_out lean Bar.lean -- -DmaxHeartbeats=0)
