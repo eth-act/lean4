@@ -2265,6 +2265,17 @@ private unsafe def isSameModuleDataUnsafe (as bs : Array ModuleData) : Bool :=
 private opaque isSameModuleData (as bs : Array ModuleData) : Bool
 
 /--
+Whether `finalizeImport` inserts the same constants in the same order into the public as into the
+private constant map, which is the case unless some module is imported privately or with
+`import all`.
+-/
+private def publicConstantsArePrivate (modules : Array ImportedModule)
+    (moduleData : Array ModuleData) : Bool :=
+  let publicData := modules.filterMap fun mod => if mod.isExported then mod.publicModule? else none
+  isSameModuleData (publicData.filter (!·.constants.isEmpty))
+    (moduleData.filter (!·.constants.isEmpty))
+
+/--
 Constructs environment from `importModulesCore` results.
 
 See also `importModules` for parameter documentation.
@@ -2289,9 +2300,11 @@ def finalizeImport (s : ImportState) (imports : Array Import) (opts : Options) (
     if !mod.isExported then numPublicConsts else
       let some data := mod.publicModule? | numPublicConsts
       numPublicConsts + data.constants.size
+  let sharePublicConsts := isModule && publicConstantsArePrivate modules moduleData
   let mut const2ModIdx : Std.HashMap Name ModuleIdx := Std.HashMap.emptyWithCapacity (capacity := numPrivateConsts + numExtraConsts)
   let mut privateConstantMap : Std.HashMap Name ConstantInfo := Std.HashMap.emptyWithCapacity (capacity := numPrivateConsts)
-  let mut publicConstantMap : Std.HashMap Name ConstantInfo := Std.HashMap.emptyWithCapacity (capacity := numPublicConsts)
+  let mut publicConstantMap : Std.HashMap Name ConstantInfo :=
+    Std.HashMap.emptyWithCapacity (capacity := if sharePublicConsts then 0 else numPublicConsts)
   for h : modIdx in *...moduleData.size do
     let data := moduleData[modIdx]
     for cname in data.constNames, cinfo in data.constants do
@@ -2309,7 +2322,9 @@ def finalizeImport (s : ImportState) (imports : Array Import) (opts : Options) (
       for cname in data.extraConstNames do
         const2ModIdx := const2ModIdx.insertIfNew cname modIdx
 
-  if isModule then
+  if sharePublicConsts then
+    publicConstantMap := privateConstantMap
+  else if isModule then
     for mod in modules.filter (·.isExported) do
       let some data := mod.publicModule? | continue
       for cname in data.constNames, cinfo in data.constants do
