@@ -32,3 +32,11 @@ Lake.importConfigFile  # configuration trace marked with `+dev`
 
 # skipping inapplicable `match` equations in `simp`
 Lean.Meta.Simp.simpMatch  # `matchEqnsCannotApply`
+
+# initializing auxiliary constants of `meta` code in the `meta` phase
+aux _private.Init.Data.Array.Basic.0.Array.forIn'Unsafe.loop._at_._private.Lean.Compiler.LCNF.EmitC.0.Lean.Compiler.LCNF.emitInitFn.spec_1  # loop of `emitInitFn`, calls `emitMetaAuxDeclInit`
+aux _private.Init.Data.Array.Basic.0.Array.forIn'Unsafe.loop._at_._private.Init.Data.Array.Basic.0.Array.forIn'Unsafe.loop._at_._private.Lean.Compiler.LCNF.EmitC.0.Lean.Compiler.LCNF.emitInitFn.spec_1.spec_2  # same loop
+
+# native code of dependencies in development mode
+Lake.Module.presetupFacetConfig  # `recFetchPreSetupDev`
+aux Lake.Module.presetupFacetConfig._closed_1  # refers to `recFetchPreSetupDev` instead of `recFetchPreSetup`
