@@ -724,7 +724,7 @@ if(USE_GITHASH)
   # This development branch identifies as the upstream release it is based on, making its build
   # outputs interchangeable with those of the release (Lake traces, `.olean` headers checked by
   # release builds). Must be updated when rebasing onto another release.
-  set(GIT_SHA1 "819816b2e0a3bf405af45ae5c7af2491d8f5bee6")
+  set(GIT_SHA1 "5045d0056413266e57c625dcd7c365b10e377c52")
   message(STATUS "git commit sha1 (upstream release): ${GIT_SHA1}")
 else()
   if(USE_LAKE AND STAGE EQUAL 0)
