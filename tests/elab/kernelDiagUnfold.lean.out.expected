@@ -1,0 +1,182 @@
+[diag] Diagnostics
+  [reduction] unfolded declarations (max: 11, num: 4):
+    [reduction] Nat.rec ↦ 11
+    [reduction] OfNat.ofNat ↦ 4
+    [reduction] Add.add ↦ 3
+    [reduction] HAdd.hAdd ↦ 3
+  [reduction] unfolded reducible declarations (max: 15, num: 4):
+    [reduction] outParam ↦ 15
+    [reduction] Nat.below ↦ 13
+    [reduction] Nat.casesOn ↦ 5
+    [reduction] Unit ↦ 4
+  [type_class] used instances (max: 4, num: 4):
+    [type_class] Lean.Grind.CommRing.OfCommSemiring.instOfNatQ ↦ 4
+    [type_class] instOfNatNat ↦ 3
+    [type_class] instAddNat ↦ 2
+    [type_class] instHAdd ↦ 2
+  [kernel] unfolded declarations (max: 3, num: 5):
+    [kernel] outParam ↦ 3
+    [kernel] instOfNatNat ↦ 2
+    [kernel] Nat.rec ↦ 2
+    [kernel] OfNat.ofNat ↦ 2
+    [kernel] Nat.below ↦ 1
+  use `set_option diagnostics.threshold <num>` to control threshold for reporting counters
+[diag] Diagnostics
+  [reduction] unfolded reducible declarations (max: 14, num: 1):
+    [reduction] outParam ↦ 14
+  [type_class] used instances (max: 11, num: 5):
+    [type_class] Lean.Grind.CommRing.OfCommSemiring.instOfNatQ ↦ 11
+    [type_class] instHAdd ↦ 5
+    [type_class] instOfNatNat ↦ 3
+    [type_class] instAddNat ↦ 1
+    [type_class] String.instHAddCharRaw ↦ 1
+  use `set_option diagnostics.threshold <num>` to control threshold for reporting counters
+[diag] Diagnostics
+  [reduction] unfolded reducible declarations (max: 14, num: 2):
+    [reduction] outParam ↦ 14
+    [reduction] DecidableEq ↦ 3
+  [type_class] used instances (max: 11, num: 6):
+    [type_class] Lean.Grind.CommRing.OfCommSemiring.instOfNatQ ↦ 11
+    [type_class] instHAdd ↦ 5
+    [type_class] instOfNatNat ↦ 3
+    [type_class] instAddNat ↦ 1
+    [type_class] instDecidableEqNat ↦ 1
+    [type_class] String.instHAddCharRaw ↦ 1
+  [def_eq] heuristic for solving `f a =?= f b` (max: 1, num: 1):
+    [def_eq] decide ↦ 1
+  [kernel] unfolded declarations (max: 122, num: 31):
+    [kernel] List.rec ↦ 122
+    [kernel] Nat.rec ↦ 122
+    [kernel] List.casesOn ↦ 61
+    [kernel] Nat.casesOn ↦ 61
+    [kernel] List.foldl._f ↦ 61
+    [kernel] List.foldl.match_1 ↦ 61
+    [kernel] List.range.loop._f ↦ 61
+    [kernel] List.range.loop.match_1 ↦ 61
+    [kernel] Add.add ↦ 60
+    [kernel] HAdd.hAdd ↦ 60
+    [kernel] instOfNatNat ↦ 3
+    [kernel] OfNat.ofNat ↦ 3
+    [kernel] outParam ↦ 2
+    [kernel] DecidableEq ↦ 1
+    [kernel] instAddNat ↦ 1
+    [kernel] instDecidableEqNat ↦ 1
+    [kernel] instHAdd ↦ 1
+    [kernel] Bool.casesOn ↦ 1
+    [kernel] Bool.rec ↦ 1
+    [kernel] Decidable.casesOn ↦ 1
+    [kernel] decide ↦ 1
+    [kernel] Decidable.rec ↦ 1
+    [kernel] List.brecOn ↦ 1
+    [kernel] List.foldl ↦ 1
+    [kernel] List.range ↦ 1
+    [kernel] Nat.brecOn ↦ 1
+    [kernel] Nat.decEq ↦ 1
+    [kernel] List.brecOn.go ↦ 1
+    [kernel] List.range.loop ↦ 1
+    [kernel] Nat.brecOn.go ↦ 1
+    [kernel] Nat.decEq.match_1 ↦ 1
+  use `set_option diagnostics.threshold <num>` to control threshold for reporting counters
+[diag] Diagnostics
+  [type_class] used instances (max: 2, num: 2):
+    [type_class] instOfNatNat ↦ 2
+    [type_class] Lean.Grind.CommRing.OfCommSemiring.instOfNatQ ↦ 2
+  use `set_option diagnostics.threshold <num>` to control threshold for reporting counters
+[diag] Diagnostics
+  [reduction] unfolded reducible declarations (max: 3, num: 1):
+    [reduction] DecidableEq ↦ 3
+  [type_class] used instances (max: 2, num: 3):
+    [type_class] instOfNatNat ↦ 2
+    [type_class] Lean.Grind.CommRing.OfCommSemiring.instOfNatQ ↦ 2
+    [type_class] instDecidableEqNat ↦ 1
+  [def_eq] heuristic for solving `f a =?= f b` (max: 1, num: 1):
+    [def_eq] decide ↦ 1
+  [kernel] unfolded declarations (max: 60, num: 22):
+    [kernel] Nat.rec ↦ 60
+    [kernel] Nat.casesOn ↦ 57
+    [kernel] fib._f ↦ 29
+    [kernel] fib.match_1 ↦ 29
+    [kernel] Add.add ↦ 26
+    [kernel] HAdd.hAdd ↦ 26
+    [kernel] OfNat.ofNat ↦ 5
+    [kernel] instOfNatNat ↦ 4
+    [kernel] DecidableEq ↦ 1
+    [kernel] fib ↦ 1
+    [kernel] instAddNat ↦ 1
+    [kernel] instDecidableEqNat ↦ 1
+    [kernel] instHAdd ↦ 1
+    [kernel] Bool.casesOn ↦ 1
+    [kernel] Bool.rec ↦ 1
+    [kernel] Decidable.casesOn ↦ 1
+    [kernel] decide ↦ 1
+    [kernel] Decidable.rec ↦ 1
+    [kernel] Nat.brecOn ↦ 1
+    [kernel] Nat.decEq ↦ 1
+    [kernel] Nat.brecOn.go ↦ 1
+    [kernel] Nat.decEq.match_1 ↦ 1
+  use `set_option diagnostics.threshold <num>` to control threshold for reporting counters
+[diag] Diagnostics
+  [reduction] unfolded declarations (max: 3, num: 5):
+    [reduction] Add.add ↦ 3
+    [reduction] HAdd.hAdd ↦ 3
+    [reduction] sizeOf ↦ 2
+    [reduction] P._sizeOf_1 ↦ 1
+    [reduction] P.rec ↦ 1
+  [reduction] unfolded reducible declarations (max: 6, num: 1):
+    [reduction] outParam ↦ 6
+  [type_class] used instances (max: 2, num: 4):
+    [type_class] instAddNat ↦ 2
+    [type_class] instHAdd ↦ 2
+    [type_class] instOfNatNat ↦ 2
+    [type_class] instSizeOfNat ↦ 2
+  [kernel] unfolded declarations (max: 6, num: 11):
+    [kernel] P.rec ↦ 6
+    [kernel] P.casesOn ↦ 4
+    [kernel] outParam ↦ 2
+    [kernel] Add.add ↦ 2
+    [kernel] HAdd.hAdd ↦ 2
+    [kernel] P.noConfusionType ↦ 2
+    [kernel] instAddNat ↦ 1
+    [kernel] instHAdd ↦ 1
+    [kernel] P._sizeOf_1 ↦ 1
+    [kernel] P._sizeOf_inst ↦ 1
+    [kernel] sizeOf ↦ 1
+  use `set_option diagnostics.threshold <num>` to control threshold for reporting counters
+[diag] Diagnostics
+  [type_class] used instances (max: 3, num: 2):
+    [type_class] instOfNatNat ↦ 3
+    [type_class] Lean.Grind.CommRing.OfCommSemiring.instOfNatQ ↦ 2
+  use `set_option diagnostics.threshold <num>` to control threshold for reporting counters
+[diag] Diagnostics
+  [reduction] unfolded reducible declarations (max: 3, num: 2):
+    [reduction] DecidableEq ↦ 3
+    [reduction] P.a ↦ 1
+  [type_class] used instances (max: 3, num: 3):
+    [type_class] instOfNatNat ↦ 3
+    [type_class] Lean.Grind.CommRing.OfCommSemiring.instOfNatQ ↦ 2
+    [type_class] instDecidableEqNat ↦ 1
+  [def_eq] heuristic for solving `f a =?= f b` (max: 1, num: 1):
+    [def_eq] decide ↦ 1
+  [kernel] unfolded declarations (max: 42, num: 21):
+    [kernel] Nat.rec ↦ 42
+    [kernel] Nat.casesOn ↦ 21
+    [kernel] Nat.repeat._f ↦ 21
+    [kernel] Nat.repeat.match_1 ↦ 21
+    [kernel] sw ↦ 20
+    [kernel] P.a ↦ 11
+    [kernel] P.b ↦ 10
+    [kernel] OfNat.ofNat ↦ 3
+    [kernel] instOfNatNat ↦ 2
+    [kernel] DecidableEq ↦ 1
+    [kernel] instDecidableEqNat ↦ 1
+    [kernel] Bool.casesOn ↦ 1
+    [kernel] Bool.rec ↦ 1
+    [kernel] Decidable.casesOn ↦ 1
+    [kernel] decide ↦ 1
+    [kernel] Decidable.rec ↦ 1
+    [kernel] Nat.brecOn ↦ 1
+    [kernel] Nat.decEq ↦ 1
+    [kernel] Nat.repeat ↦ 1
+    [kernel] Nat.brecOn.go ↦ 1
+    [kernel] Nat.decEq.match_1 ↦ 1
+  use `set_option diagnostics.threshold <num>` to control threshold for reporting counters

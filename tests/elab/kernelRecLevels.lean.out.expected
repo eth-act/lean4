@@ -1,0 +1,11 @@
+a=Bool: true OK
+b=Type: true OK
+a=Nat: false OK
+c=Type: true OK
+c'=Nat: true OK
+c'=Bool: false OK
+pair: true OK
+pair-wrong: false OK
+check a : (fun x => Type) [1]
+check b : (fun x => Type 1) [1]
+check c : (fun x => Type 1) []

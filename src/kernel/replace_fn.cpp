@@ -14,27 +14,21 @@ Author: Leonardo de Moura
 namespace lean {
 
 class replace_rec_fn {
-    struct key_hasher {
-        std::size_t operator()(std::pair<lean_object *, unsigned> const & p) const {
-            return hash((size_t)p.first >> 3, p.second);
-        }
-    };
-    lean::unordered_map<std::pair<lean_object *, unsigned>, expr, key_hasher> m_cache;
+    replace_cache                                         m_cache;
     std::function<optional<expr>(expr const &, unsigned)> m_f;
     bool                                                  m_use_cache;
 
     expr save_result(expr const & e, unsigned offset, expr r, bool shared) {
         if (shared)
-            m_cache.insert(mk_pair(mk_pair(e.raw(), offset), r));
+            m_cache.insert(e, offset, r);
         return r;
     }
 
     expr apply(expr const & e, unsigned offset) {
         bool shared = false;
         if (m_use_cache && !is_likely_unshared(e)) {
-            auto it = m_cache.find(mk_pair(e.raw(), offset));
-            if (it != m_cache.end())
-                return it->second;
+            if (expr const * r = m_cache.find(e, offset))
+                return *r;
             shared = true;
         }
         if (optional<expr> r = m_f(e, offset)) {
