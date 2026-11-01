@@ -72,9 +72,11 @@ inline expr to_cnstr_when_structure(environment const & env, name const & induct
     return expand_eta_struct(env, e_type, e);
 }
 
-template<typename WHNF, typename INFER, typename IS_DEF_EQ>
+/* `inst_rhs(rule, rec_info, ls)` must return `instantiate_lparams(rule.get_rhs(), rec_info.get_lparams(), ls)`. */
+template<typename WHNF, typename INFER, typename IS_DEF_EQ, typename INST_RHS>
 inline optional<expr> inductive_reduce_rec(environment const & env, expr const & e,
-                                           WHNF const & whnf, INFER const & infer_type, IS_DEF_EQ const & is_def_eq) {
+                                           WHNF const & whnf, INFER const & infer_type, IS_DEF_EQ const & is_def_eq,
+                                           INST_RHS const & inst_rhs) {
     expr const & rec_fn   = get_app_fn(e);
     if (!is_constant(rec_fn)) return none_expr();
     optional<constant_info> rec_info = env.find(const_name(rec_fn));
@@ -101,7 +103,7 @@ inline optional<expr> inductive_reduce_rec(environment const & env, expr const &
     get_app_args(major, major_args);
     if (rule->get_nfields() > major_args.size()) return none_expr();
     if (length(const_levels(rec_fn)) != length(rec_info->get_lparams())) return none_expr();
-    expr rhs = instantiate_lparams(rule->get_rhs(), rec_info->get_lparams(), const_levels(rec_fn));
+    expr rhs = inst_rhs(*rule, *rec_info, const_levels(rec_fn));
     /* apply parameters, motives and minor premises from recursor application. */
     rhs      = mk_app(rhs, rec_val.get_nparams() + rec_val.get_nmotives() + rec_val.get_nminors(), rec_args.data());
     /* The number of parameters in the constructor is not necessarily

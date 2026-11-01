@@ -17,6 +17,7 @@ Author: Leonardo de Moura
 #include "kernel/local_ctx.h"
 #include "kernel/expr_maps.h"
 #include "kernel/equiv_manager.h"
+#include "kernel/open_hash_table.h"
 
 namespace lean {
 /** \brief Lean Type Checker. It can also be used to infer types, check whether a
@@ -24,16 +25,16 @@ namespace lean {
 class type_checker {
 public:
     class state {
-        typedef expr_map<expr> infer_cache;
-        typedef lean::unordered_set<expr_pair, expr_pair_hash, expr_pair_eq> expr_pair_set;
         environment               m_env;
         name_generator            m_ngen;
-        infer_cache               m_infer_type[2];
-        expr_map<expr>            m_whnf_core;
-        expr_map<expr>            m_whnf;
+        structural_expr_map       m_infer_type[2];
+        structural_expr_map       m_whnf_core;
+        structural_expr_map       m_whnf;
         equiv_manager             m_eqv_manager;
-        expr_pair_set             m_failure;
-        expr_map<expr>            m_unfold;
+        structural_expr_pair_set  m_failure;
+        structural_expr_map       m_unfold;
+        /* Right-hand sides of recursor rules with instantiated universe level parameters. */
+        expr_levels_map           m_rec_rhs;
         friend type_checker;
     public:
         state(environment const & env);

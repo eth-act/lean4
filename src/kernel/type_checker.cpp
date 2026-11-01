@@ -273,9 +273,8 @@ expr type_checker::infer_type_core(expr const & e, bool infer_only) {
 
     check_system("type checker", /* do_check_interrupted */ true);
 
-    auto it = m_st->m_infer_type[infer_only].find(e);
-    if (it != m_st->m_infer_type[infer_only].end())
-        return it->second;
+    if (expr const * r = m_st->m_infer_type[infer_only].find(e))
+        return *r;
 
     expr r;
     switch (e.kind()) {
@@ -297,7 +296,7 @@ expr type_checker::infer_type_core(expr const & e, bool infer_only) {
     case expr_kind::Let:      r = infer_let(e, infer_only);            break;
     }
 
-    m_st->m_infer_type[infer_only].insert(mk_pair(e, r));
+    m_st->m_infer_type[infer_only].insert(e, r);
     return r;
 }
 
@@ -339,7 +338,17 @@ optional<expr> type_checker::reduce_recursor(expr const & e, bool cheap_rec, boo
     if (optional<expr> r = inductive_reduce_rec(env(), e,
                                                 [&](expr const & e) { return cheap_rec ? whnf_core(e, cheap_rec, cheap_proj) : whnf(e); },
                                                 [&](expr const & e) { return infer(e); },
-                                                [&](expr const & e1, expr const & e2) { return is_def_eq(e1, e2); })) {
+                                                [&](expr const & e1, expr const & e2) { return is_def_eq(e1, e2); },
+                                                [&](recursor_rule const & rule, constant_info const & rec_info, levels const & ls) {
+                                                    expr const & rhs = rule.get_rhs();
+                                                    if (is_nil(ls) || !has_param_univ(rhs))
+                                                        return rhs;
+                                                    if (expr const * r = m_st->m_rec_rhs.find(rhs, ls))
+                                                        return *r;
+                                                    expr r = instantiate_lparams(rhs, rec_info.get_lparams(), ls);
+                                                    m_st->m_rec_rhs.insert(rhs, ls, r);
+                                                    return r;
+                                                })) {
         return r;
     }
     return none_expr();
@@ -420,9 +429,8 @@ expr type_checker::whnf_core(expr const & e, bool cheap_rec, bool cheap_proj) {
     }
 
     // check cache
-    auto it = m_st->m_whnf_core.find(e);
-    if (it != m_st->m_whnf_core.end())
-        return it->second;
+    if (expr const * r = m_st->m_whnf_core.find(e))
+        return *r;
 
     // do the actual work
     expr r;
@@ -476,8 +484,16 @@ expr type_checker::whnf_core(expr const & e, bool cheap_rec, bool cheap_proj) {
         break;
     }
 
-    if (!cheap_rec && !cheap_proj) {
-        m_st->m_whnf_core.insert(mk_pair(e, r));
+    /* An unshared `e` is usually a temporary built by a reduction step (e.g. a beta or iota
+       reduct). Caching it would keep it and its result alive until the type checker is destroyed,
+       for little benefit: a later term with the same structure has to be built anew, typically by
+       reducing a shared term whose result is cached anyway. Only single-threaded objects are
+       considered unshared, since other threads may concurrently change the reference count of a
+       multi-threaded object, which would make the decision nondeterministic. With diagnostics
+       enabled we still cache everything, since the reported unfolding counts depend on which
+       reductions are repeated. */
+    if (!cheap_rec && !cheap_proj && (m_diag || !lean_is_exclusive(e.raw()))) {
+        m_st->m_whnf_core.insert(e, r);
     }
     return r;
 }
@@ -503,11 +519,10 @@ optional<expr> type_checker::unfold_definition_core(expr const & e) {
                 m_diag->record_unfold(d->get_name());
             }
             if (len > 0) {
-                auto it = m_st->m_unfold.find(e);
-                if (it != m_st->m_unfold.end())
-                    return some_expr(it->second);
+                if (expr const * r = m_st->m_unfold.find(e))
+                    return some_expr(*r);
                 expr result = instantiate_value_lparams(*d, us);
-                m_st->m_unfold.insert(mk_pair(e, result));
+                m_st->m_unfold.insert(e, result);
                 return some_expr(result);
             } else {
                 return some_expr(instantiate_value_lparams(*d, us));
@@ -657,24 +672,23 @@ expr type_checker::whnf(expr const & e) {
     }
 
     // check cache
-    auto it = m_st->m_whnf.find(e);
-    if (it != m_st->m_whnf.end())
-        return it->second;
+    if (expr const * r = m_st->m_whnf.find(e))
+        return *r;
 
     expr t = e;
     while (true) {
         expr t1 = whnf_core(t);
         if (auto v = reduce_native(env(), t1)) {
-            m_st->m_whnf.insert(mk_pair(e, *v));
+            m_st->m_whnf.insert(e, *v);
             return *v;
         } else if (auto v = reduce_nat(t1)) {
-            m_st->m_whnf.insert(mk_pair(e, *v));
+            m_st->m_whnf.insert(e, *v);
             return *v;
         } else if (auto next_t = unfold_definition(t1)) {
             t = *next_t;
         } else {
             auto r = t1;
-            m_st->m_whnf.insert(mk_pair(e, r));
+            m_st->m_whnf.insert(e, r);
             return r;
         }
     }
@@ -844,21 +858,21 @@ lbool type_checker::is_def_eq_proof_irrel(expr const & t, expr const & s) {
 
 bool type_checker::failed_before(expr const & t, expr const & s) const {
     if (hash(t) < hash(s)) {
-        return m_st->m_failure.find(mk_pair(t, s)) != m_st->m_failure.end();
+        return m_st->m_failure.contains(t, s);
     } else if (hash(t) > hash(s)) {
-        return m_st->m_failure.find(mk_pair(s, t)) != m_st->m_failure.end();
+        return m_st->m_failure.contains(s, t);
     } else {
         return
-            m_st->m_failure.find(mk_pair(t, s)) != m_st->m_failure.end() ||
-            m_st->m_failure.find(mk_pair(s, t)) != m_st->m_failure.end();
+            m_st->m_failure.contains(t, s) ||
+            m_st->m_failure.contains(s, t);
     }
 }
 
 void type_checker::cache_failure(expr const & t, expr const & s) {
     if (hash(t) <= hash(s))
-        m_st->m_failure.insert(mk_pair(t, s));
+        m_st->m_failure.insert(t, s);
     else
-        m_st->m_failure.insert(mk_pair(s, t));
+        m_st->m_failure.insert(s, t);
 }
 
 /**
