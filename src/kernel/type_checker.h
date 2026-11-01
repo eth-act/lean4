@@ -16,6 +16,7 @@ Author: Leonardo de Moura
 #include "kernel/environment.h"
 #include "kernel/local_ctx.h"
 #include "kernel/expr_maps.h"
+#include "kernel/open_hash_table.h"
 
 namespace lean {
 /** \brief Lean Type Checker. It can also be used to infer types, check whether a
@@ -23,13 +24,11 @@ namespace lean {
 class type_checker {
 public:
     class state {
-        typedef expr_map<expr> infer_cache;
-        typedef lean::unordered_set<expr_pair, expr_pair_hash, expr_pair_eq> expr_pair_set;
         environment               m_env;
         name_generator            m_ngen;
-        infer_cache               m_infer_type[2];
-        expr_map<expr>            m_whnf_core;
-        expr_map<expr>            m_whnf;
+        structural_expr_map       m_infer_type[2];
+        structural_expr_map       m_whnf_core;
+        structural_expr_map       m_whnf;
         /* Positive and negative caches for `is_def_eq`. Since kernel expressions contain no
            metavariables and free variables are globally unique with fixed types, the result of
            `is_def_eq` is a function of its two arguments, so both results can be cached and shared
@@ -37,9 +36,11 @@ public:
            structure): `is_def_eq` is a sound but incomplete semi-decision procedure and is therefore
            not transitive, so taking a transitive closure of successful pairs would make its result
            depend on evaluation order. */
-        expr_pair_set             m_success;
-        expr_pair_set             m_failure;
-        expr_map<expr>            m_unfold;
+        structural_expr_pair_set  m_success;
+        structural_expr_pair_set  m_failure;
+        structural_expr_map       m_unfold;
+        /* Right-hand sides of recursor rules with instantiated universe level parameters. */
+        expr_levels_map           m_rec_rhs;
         friend type_checker;
     public:
         state(environment const & env);

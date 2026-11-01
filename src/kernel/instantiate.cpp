@@ -15,24 +15,15 @@ namespace lean {
 expr instantiate(expr const & a, unsigned s, unsigned n, expr const * subst) {
     if (s >= get_loose_bvar_range(a) || n == 0)
         return a;
-    return replace(a, [=](expr const & m, unsigned offset) -> optional<expr> {
+    return replace_loose_bvars(a, s, [=](expr const & m, unsigned offset) -> expr {
             unsigned s1 = s + offset;
-            if (s1 < s)
-                return some_expr(m); // overflow, vidx can't be >= max unsigned
-            if (s1 >= get_loose_bvar_range(m))
-                return some_expr(m); // expression m does not contain loose bound variables with idx >= s1
-            if (is_bvar(m)) {
-                nat const & vidx = bvar_idx(m);
-                if (vidx >= s1) {
-                    unsigned h = s1 + n;
-                    if (h < s1 /* overflow, h is bigger than any vidx */ || vidx < h) {
-                        return some_expr(lift_loose_bvars(subst[vidx.get_small_value() - s1], offset));
-                    } else {
-                        return some_expr(mk_bvar(vidx - nat(n)));
-                    }
-                }
+            nat const & vidx = bvar_idx(m);
+            unsigned h = s1 + n;
+            if (h < s1 /* overflow, h is bigger than any vidx */ || vidx < h) {
+                return lift_loose_bvars(subst[vidx.get_small_value() - s1], offset);
+            } else {
+                return mk_bvar(vidx - nat(n));
             }
-            return none_expr();
         });
 }
 
@@ -58,22 +49,15 @@ static object * lean_expr_instantiate_core(b_obj_arg a0, size_t n, object** subs
         lean_inc(a0);
         return a0;
     }
-    expr r = replace(a, [=](expr const & m, unsigned offset) -> optional<expr> {
-            if (offset >= get_loose_bvar_range(m))
-                return some_expr(m); // expression m does not contain loose bound variables with idx >= offset
-            if (is_bvar(m)) {
-                nat const & vidx = bvar_idx(m);
-                if (vidx >= offset) {
-                    size_t h = offset + n;
-                    if (h < offset /* overflow, h is bigger than any vidx */ || (vidx.is_small() && vidx.get_small_value() < h)) {
-                        object * v = subst[vidx.get_small_value() - offset];
-                        return some_expr(lift_loose_bvars(TO_REF(expr, v), offset));
-                    } else {
-                        return some_expr(mk_bvar(vidx - nat::of_size_t(n)));
-                    }
-                }
+    expr r = replace_loose_bvars(a, 0, [=](expr const & m, unsigned offset) -> expr {
+            nat const & vidx = bvar_idx(m);
+            size_t h = offset + n;
+            if (h < offset /* overflow, h is bigger than any vidx */ || (vidx.is_small() && vidx.get_small_value() < h)) {
+                object * v = subst[vidx.get_small_value() - offset];
+                return lift_loose_bvars(TO_REF(expr, v), offset);
+            } else {
+                return mk_bvar(vidx - nat::of_size_t(n));
             }
-            return none_expr();
         });
     return r.steal();
 }
@@ -99,21 +83,14 @@ extern "C" LEAN_EXPORT object * lean_expr_instantiate_range(b_obj_arg a, b_obj_a
 expr instantiate_rev(expr const & a, unsigned n, expr const * subst) {
     if (!has_loose_bvars(a))
         return a;
-    return replace(a, [=](expr const & m, unsigned offset) -> optional<expr> {
-            if (offset >= get_loose_bvar_range(m))
-                return some_expr(m); // expression m does not contain loose bound variables with idx >= offset
-            if (is_bvar(m)) {
-                nat const & vidx = bvar_idx(m);
-                if (vidx >= offset) {
-                    size_t h = offset + n;
-                    if (h < offset /* overflow, h is bigger than any vidx */ || (vidx.is_small() && vidx.get_small_value() < h)) {
-                        return some_expr(lift_loose_bvars(subst[n - (vidx.get_small_value() - offset) - 1], offset));
-                    } else {
-                        return some_expr(mk_bvar(vidx - nat(n)));
-                    }
-                }
+    return replace_loose_bvars(a, 0, [=](expr const & m, unsigned offset) -> expr {
+            nat const & vidx = bvar_idx(m);
+            size_t h = offset + n;
+            if (h < offset /* overflow, h is bigger than any vidx */ || (vidx.is_small() && vidx.get_small_value() < h)) {
+                return lift_loose_bvars(subst[n - (vidx.get_small_value() - offset) - 1], offset);
+            } else {
+                return mk_bvar(vidx - nat(n));
             }
-            return none_expr();
         });
 }
 
@@ -123,22 +100,15 @@ static object * lean_expr_instantiate_rev_core(object * a0, size_t n, object ** 
         lean_inc(a0);
         return a0;
     }
-    expr r = replace(a, [=](expr const & m, unsigned offset) -> optional<expr> {
-            if (offset >= get_loose_bvar_range(m))
-                return some_expr(m); // expression m does not contain loose bound variables with idx >= offset
-            if (is_bvar(m)) {
-                nat const & vidx = bvar_idx(m);
-                if (vidx >= offset) {
-                    size_t h = offset + n;
-                    if (h < offset /* overflow, h is bigger than any vidx */ || (vidx.is_small() && vidx.get_small_value() < h)) {
-                        object * v = subst[n - (vidx.get_small_value() - offset) - 1];
-                        return some_expr(lift_loose_bvars(TO_REF(expr, v), offset));
-                    } else {
-                        return some_expr(mk_bvar(vidx - nat::of_size_t(n)));
-                    }
-                }
+    expr r = replace_loose_bvars(a, 0, [=](expr const & m, unsigned offset) -> expr {
+            nat const & vidx = bvar_idx(m);
+            size_t h = offset + n;
+            if (h < offset /* overflow, h is bigger than any vidx */ || (vidx.is_small() && vidx.get_small_value() < h)) {
+                object * v = subst[n - (vidx.get_small_value() - offset) - 1];
+                return lift_loose_bvars(TO_REF(expr, v), offset);
+            } else {
+                return mk_bvar(vidx - nat::of_size_t(n));
             }
-            return none_expr();
         });
     return r.steal();
 }
